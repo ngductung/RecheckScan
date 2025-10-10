@@ -6,7 +6,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>burp-recheck-scan</artifactId>
-    <version>2.0-SQLITE</version>
+    <version>mysql</version>
 
     <dependencies>
         <dependency>
@@ -15,9 +15,9 @@
             <version>2025.6</version>
         </dependency>
         <dependency>
-            <groupId>org.xerial</groupId>
-            <artifactId>sqlite-jdbc</artifactId>
-            <version>3.50.1.0</version>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>8.0.33</version>
         </dependency>
     </dependencies>
 
