@@ -38,7 +38,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     private String savedDbPassword;
     private boolean highlightEnabled = false;
     private boolean noteEnabled = false;
-    private boolean autoBypassNoParamGet = false;
+    private boolean autoBypassNoParam = false;
 
     private DefaultTableModel tableModel;
     private final Map<Integer, Integer> modelRowToDbId = new HashMap<>();
@@ -102,8 +102,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                         }).start();
                     }
 
-                    boolean isGetWithoutParams = "GET".equals(method) && requestParams.isEmpty();
-                    if (autoBypassNoParamGet && isGetWithoutParams) {
+                    if (autoBypassNoParam && requestParams.isEmpty()) {
                         new Thread(() -> {
                             if (databaseManager.autoBypassApi(method, host, path)) {
                                 SwingUtilities.invokeLater(RecheckScanApiExtension.this::loadDataFromDb);
@@ -276,9 +275,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             noteEnabled = noteCheckBox.isSelected();
             saveSettings();
         });
-        JCheckBox autoBypassCheckBox = new JCheckBox("Auto-bypass GET APIs without params", autoBypassNoParamGet);
+        JCheckBox autoBypassCheckBox = new JCheckBox("Auto-bypass APIs without params", autoBypassNoParam);
         autoBypassCheckBox.addActionListener(e -> {
-            autoBypassNoParamGet = autoBypassCheckBox.isSelected();
+            autoBypassNoParam = autoBypassCheckBox.isSelected();
             saveSettings();
         });
 
@@ -433,7 +432,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 writer.write(str(savedExtensions) + "\n" + highlightEnabled + "\n" + noteEnabled + "\n" +
                         str(savedDbIp) + "\n" + str(savedDbPort) + "\n" + str(savedDbName) + "\n" +
                         str(savedDbUsername) + "\n" + str(savedDbPassword) + "\n" +
-                        autoBypassNoParamGet + "\n" + str(savedStatusCodes) + "\n");
+                        autoBypassNoParam + "\n" + str(savedStatusCodes) + "\n");
             }
         } catch (IOException ex) {
             JOptionPane.showMessageDialog(null, "Failed to save settings: " + ex.getMessage());
@@ -466,7 +465,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 if (lines.size() > 7)
                     savedDbPassword = lines.get(7).trim();
                 if (lines.size() > 8)
-                    autoBypassNoParamGet = Boolean.parseBoolean(lines.get(8).trim());
+                    autoBypassNoParam = Boolean.parseBoolean(lines.get(8).trim());
                 if (lines.size() > 9)
                     savedStatusCodes = lines.get(9).trim();
             }
