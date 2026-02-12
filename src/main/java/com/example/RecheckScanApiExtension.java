@@ -16,13 +16,11 @@ import javax.swing.table.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.ActionEvent;
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.nio.file.Files;
+import java.io.StringReader;
+import java.io.StringWriter;
 import java.util.*;
 import java.util.List;
+import java.util.Properties;
 
 /**
  * Lớp chính của extension "Recheck Scan API".
@@ -632,63 +630,43 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     }
     
     /**
-     * Lưu các cài đặt hiện tại vào tệp cấu hình (recheckscan.ini cùng folder với BurpSuite).
+     * Lưu các cài đặt hiện tại vào persistence extension data (đi theo project).
      */
     private void saveSettings() {
         try {
-            File configFile = new File("recheckscan.ini");
-            try (BufferedWriter writer = new BufferedWriter(new FileWriter(configFile))) {
-                writer.write("exclude_extensions=" + exclude_extensions + "\n");
-                writer.write("highlightEnabled=" + highlightEnabled + "\n");
-                writer.write("noteEnabled=" + noteEnabled + "\n");
-                writer.write("outputPath=" + savedOutputPath + "\n");
-                writer.write("autoBypassNoParam=" + autoBypassNoParam + "\n");
-                writer.write("exclude_status_code=" + exclude_status_code + "\n");
-            }
-        } catch (IOException ex) {
+            Properties props = new Properties();
+            props.setProperty("exclude_extensions", exclude_extensions);
+            props.setProperty("highlightEnabled", String.valueOf(highlightEnabled));
+            props.setProperty("noteEnabled", String.valueOf(noteEnabled));
+            props.setProperty("outputPath", savedOutputPath);
+            props.setProperty("autoBypassNoParam", String.valueOf(autoBypassNoParam));
+            props.setProperty("exclude_status_code", exclude_status_code);
+            
+            StringWriter writer = new StringWriter();
+            props.store(writer, null);
+            api.persistence().extensionData().setString("settings", writer.toString());
+        } catch (Exception ex) {
             JOptionPane.showMessageDialog(null, "Failed to save settings: " + ex.getMessage());
         }
     }
 
     /**
-     * Tải các cài đặt từ tệp cấu hình (recheckscan.ini cùng folder với BurpSuite) khi khởi động.
+     * Tải các cài đặt từ persistence extension data khi khởi động.
      */
     private void loadSavedSettings() {
         try {
-            File configFile = new File("recheckscan.ini");
-            if (configFile.exists()) {
-                List<String> lines = Files.readAllLines(configFile.toPath());
-                for (String line : lines) {
-                    if (line.trim().isEmpty() || line.startsWith("#")) continue;
-                    String[] parts = line.split("=", 2);
-                    if (parts.length != 2) continue;
-                    
-                    String key = parts[0].trim();
-                    String value = parts[1].trim();
-                    
-                    switch (key) {
-                        case "exclude_extensions":
-                            exclude_extensions = value;
-                            break;
-                        case "highlightEnabled":
-                            highlightEnabled = Boolean.parseBoolean(value);
-                            break;
-                        case "noteEnabled":
-                            noteEnabled = Boolean.parseBoolean(value);
-                            break;
-                        case "outputPath":
-                            savedOutputPath = value;
-                            break;
-                        case "autoBypassNoParam":
-                            autoBypassNoParam = Boolean.parseBoolean(value);
-                            break;
-                        case "exclude_status_code":
-                            exclude_status_code = value;
-                            break;
-                    }
-                }
+            String settingsStr = api.persistence().extensionData().getString("settings");
+            if (settingsStr != null && !settingsStr.isEmpty()) {
+                Properties props = new Properties();
+                props.load(new StringReader(settingsStr));
+                exclude_extensions = props.getProperty("exclude_extensions", "");
+                highlightEnabled = Boolean.parseBoolean(props.getProperty("highlightEnabled", "false"));
+                noteEnabled = Boolean.parseBoolean(props.getProperty("noteEnabled", "false"));
+                savedOutputPath = props.getProperty("outputPath", "");
+                autoBypassNoParam = Boolean.parseBoolean(props.getProperty("autoBypassNoParam", "false"));
+                exclude_status_code = props.getProperty("exclude_status_code", "");
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             api.logging().logToError("Failed to load settings: " + e.getMessage());
         }
     }
