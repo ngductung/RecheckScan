@@ -47,14 +47,18 @@ public class DatabaseManager {
         try {
             // Nạp driver JDBC cho SQLite.
             Class.forName("org.sqlite.JDBC");
-            File dbFile = new File(dbPath);
+            
             // Đảm bảo thư mục cha tồn tại trước khi tạo tệp CSDL.
-            if (!dbFile.getParentFile().exists()) {
-                dbFile.getParentFile().mkdirs();
+            File dbFile = new File(dbPath);
+            File parentDir = dbFile.getParentFile();
+            if (parentDir != null && !parentDir.exists()) {
+                parentDir.mkdirs();
             }
+            
             // Tạo kết nối đến tệp SQLite.
             connection = DriverManager.getConnection("jdbc:sqlite:" + this.dbPath);
             api.logging().logToOutput("Successfully connected to SQLite database: " + this.dbPath);
+            
             // Tạo bảng nếu nó chưa tồn tại.
             createTableIfNotExists();
         } catch (SQLException | ClassNotFoundException e) {
@@ -78,8 +82,8 @@ public class DatabaseManager {
                     : savedOutputPath;
             return path.toLowerCase().endsWith(".db") ? path : path + ".db";
         }
-        // Đường dẫn mặc định trong thư mục Local AppData của người dùng.
-        return new File(System.getProperty("user.home"), "AppData/Local/RecheckScan/scan_api.db").getAbsolutePath();
+        // Đường dẫn mặc định trong thư mục Temp của Windows.
+        return new File(System.getProperty("java.io.tmpdir"), "RecheckScan/scan_api.db").getAbsolutePath();
     }
 
     /**
@@ -336,6 +340,36 @@ public class DatabaseManager {
     private String setToString(Set<String> set) {
         if (set == null || set.isEmpty()) return "";
         return set.stream().sorted().collect(Collectors.joining("|"));
+    }
+
+    /**
+     * Áp dụng quy tắc auto-bypass cho tất cả các bản ghi cũ phù hợp trong CSDL.
+     * Được gọi khi người dùng nhấn Apply trong Settings với tùy chọn auto-bypass được bật.
+     *
+     * @return Số lượng dòng đã được cập nhật.
+     */
+    public synchronized int applyAutoBypassToOldRecords() {
+        String sql = """
+            UPDATE api_log
+            SET
+                is_bypassed = 1,
+                last_seen = CURRENT_TIMESTAMP
+            WHERE
+                (unscanned_params IS NULL OR unscanned_params = '')
+                AND is_scanned = 0
+                AND is_rejected = 0
+                AND is_bypassed = 0
+            """;
+        try (Statement stmt = connection.createStatement()) {
+            int affectedRows = stmt.executeUpdate(sql);
+            if (affectedRows > 0) {
+                api.logging().logToOutput("Retroactively bypassed " + affectedRows + " old GET APIs without parameters.");
+            }
+            return affectedRows;
+        } catch (SQLException e) {
+            api.logging().logToError("Error during retroactive auto-bypass: " + e.getMessage(), e);
+            return 0;
+        }
     }
     
     /**

@@ -1,19 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Maven POM configuration for Recheck Scan API Extension
+    
+    This project builds a Burp Suite extension that helps track and manage
+    API endpoint scanning status using SQLite database for persistence.
+    
+    Key features:
+    - Automatic API parameter detection
+    - Scan status tracking (scanned/rejected/bypassed)
+    - SQLite database integration
+    - User-friendly interface with tabs and statistics
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!-- Project identification -->
     <groupId>com.example</groupId>
     <artifactId>burp-recheck-scan</artifactId>
     <version>2.0-SQLITE</version>
+    <name>Recheck Scan API Extension</name>
+    <description>A Burp Suite extension for tracking API scanning status with SQLite persistence</description>
 
+    <!-- Dependencies required for the extension -->
     <dependencies>
+        <!-- Burp Suite Montoya API - Core interface for extension development -->
         <dependency>
             <groupId>net.portswigger.burp.extensions</groupId>
             <artifactId>montoya-api</artifactId>
             <version>2025.6</version>
+            <scope>provided</scope> <!-- Provided by Burp Suite runtime -->
         </dependency>
+        
+        <!-- SQLite JDBC Driver - For database persistence -->
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
@@ -21,8 +41,10 @@
         </dependency>
     </dependencies>
 
+    <!-- Build configuration -->
     <build>
         <plugins>
+            <!-- Maven Shade Plugin - Creates fat JAR with all dependencies -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -34,23 +56,47 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <!-- Include all dependencies except provided ones -->
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>net.portswigger.burp.extensions:montoya-api</exclude>
+                                </excludes>
+                            </artifactSet>
                             <transformers>
+                                <!-- Set main class for the JAR manifest -->
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.example.RecheckScanApiExtension</mainClass>
                                 </transformer>
+                                <!-- Handle service files properly -->
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
+            
+            <!-- Maven Compiler Plugin - Set Java version -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>17</source>
+                    <target>17</target>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 
+    <!-- Project properties -->
     <properties>
+        <!-- Java version configuration -->
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
+        <!-- Encoding configuration -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     </properties>
 
 </project>
