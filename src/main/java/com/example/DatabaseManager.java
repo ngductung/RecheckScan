@@ -5,6 +5,7 @@ import burp.api.montoya.MontoyaApi;
 import java.io.File;
 import java.sql.*;
 import java.util.*;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
 /**
@@ -340,6 +341,177 @@ public class DatabaseManager {
     private String setToString(Set<String> set) {
         if (set == null || set.isEmpty()) return "";
         return set.stream().sorted().collect(Collectors.joining("|"));
+    }
+
+    public synchronized int normalizeStoredPaths(UnaryOperator<String> pathNormalizer) {
+        if (pathNormalizer == null) {
+            return 0;
+        }
+
+        List<ApiRecord> records = new ArrayList<>();
+        String selectSql = "SELECT id, method, host, path, unscanned_params, scanned_params, is_scanned, is_rejected, is_bypassed, is_from_repeater FROM api_log ORDER BY id ASC";
+        try (Statement stmt = connection.createStatement(); ResultSet rs = stmt.executeQuery(selectSql)) {
+            while (rs.next()) {
+                records.add(recordFromResultSet(rs));
+            }
+        } catch (SQLException e) {
+            api.logging().logToError("Failed to load API data for path normalization: " + e.getMessage(), e);
+            return 0;
+        }
+
+        int affectedRows = 0;
+        boolean originalAutoCommit = true;
+        try {
+            originalAutoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+
+            for (ApiRecord record : records) {
+                String normalizedPath = pathNormalizer.apply(record.path);
+                if (normalizedPath == null || normalizedPath.equals(record.path)) {
+                    continue;
+                }
+
+                ApiRecord target = findRecord(record.method, record.host, normalizedPath);
+                if (target == null || target.id == record.id) {
+                    try (PreparedStatement stmt = connection.prepareStatement(
+                            "UPDATE api_log SET path = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?")) {
+                        stmt.setString(1, normalizedPath);
+                        stmt.setInt(2, record.id);
+                        affectedRows += stmt.executeUpdate();
+                    }
+                } else if (record.isScanned && !target.isScanned) {
+                    try (PreparedStatement stmt = connection.prepareStatement("DELETE FROM api_log WHERE id = ?")) {
+                        stmt.setInt(1, target.id);
+                        stmt.executeUpdate();
+                    }
+                    mergeRecordsInto(record, target, normalizedPath);
+                    affectedRows++;
+                } else {
+                    mergeRecordsInto(target, record, normalizedPath);
+                    try (PreparedStatement stmt = connection.prepareStatement("DELETE FROM api_log WHERE id = ?")) {
+                        stmt.setInt(1, record.id);
+                        stmt.executeUpdate();
+                    }
+                    affectedRows++;
+                }
+            }
+
+            connection.commit();
+            if (affectedRows > 0) {
+                api.logging().logToOutput("Normalized " + affectedRows + " stored API path records.");
+            }
+        } catch (SQLException e) {
+            try {
+                connection.rollback();
+            } catch (SQLException rollbackError) {
+                api.logging().logToError("Failed to rollback path normalization: " + rollbackError.getMessage(), rollbackError);
+            }
+            api.logging().logToError("Error during stored path normalization: " + e.getMessage(), e);
+            return 0;
+        } finally {
+            try {
+                connection.setAutoCommit(originalAutoCommit);
+            } catch (SQLException e) {
+                api.logging().logToError("Failed to restore database autocommit: " + e.getMessage(), e);
+            }
+        }
+        return affectedRows;
+    }
+
+    private ApiRecord findRecord(String method, String host, String path) throws SQLException {
+        String sql = "SELECT id, method, host, path, unscanned_params, scanned_params, is_scanned, is_rejected, is_bypassed, is_from_repeater FROM api_log WHERE host = ? AND path = ? AND method = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, host);
+            stmt.setString(2, path);
+            stmt.setString(3, method);
+            ResultSet rs = stmt.executeQuery();
+            return rs.next() ? recordFromResultSet(rs) : null;
+        }
+    }
+
+    private ApiRecord recordFromResultSet(ResultSet rs) throws SQLException {
+        return new ApiRecord(
+                rs.getInt("id"),
+                rs.getString("method"),
+                rs.getString("host"),
+                rs.getString("path"),
+                stringToSet(rs.getString("unscanned_params")),
+                stringToSet(rs.getString("scanned_params")),
+                rs.getBoolean("is_scanned"),
+                rs.getBoolean("is_rejected"),
+                rs.getBoolean("is_bypassed"),
+                rs.getBoolean("is_from_repeater")
+        );
+    }
+
+    private void mergeRecordsInto(ApiRecord keep, ApiRecord merge, String path) throws SQLException {
+        Set<String> mergedScanned = new HashSet<>(keep.scannedParams);
+        mergedScanned.addAll(merge.scannedParams);
+
+        Set<String> mergedUnscanned = new HashSet<>(keep.unscannedParams);
+        mergedUnscanned.addAll(merge.unscannedParams);
+        mergedUnscanned.removeAll(mergedScanned);
+
+        boolean mergedScannedStatus = (keep.isScanned || merge.isScanned) && mergedUnscanned.isEmpty();
+        String sql = """
+                UPDATE api_log
+                SET path = ?,
+                    unscanned_params = ?,
+                    scanned_params = ?,
+                    is_scanned = ?,
+                    is_rejected = ?,
+                    is_bypassed = ?,
+                    is_from_repeater = ?,
+                    last_seen = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """;
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, path);
+            stmt.setString(2, setToString(mergedUnscanned));
+            stmt.setString(3, setToString(mergedScanned));
+            stmt.setBoolean(4, mergedScannedStatus);
+            stmt.setBoolean(5, keep.isRejected || merge.isRejected);
+            stmt.setBoolean(6, keep.isBypassed || merge.isBypassed);
+            stmt.setBoolean(7, keep.isFromRepeater || merge.isFromRepeater);
+            stmt.setInt(8, keep.id);
+            stmt.executeUpdate();
+        }
+    }
+
+    private static class ApiRecord {
+        private final int id;
+        private final String method;
+        private final String host;
+        private final String path;
+        private final Set<String> unscannedParams;
+        private final Set<String> scannedParams;
+        private final boolean isScanned;
+        private final boolean isRejected;
+        private final boolean isBypassed;
+        private final boolean isFromRepeater;
+
+        private ApiRecord(
+                int id,
+                String method,
+                String host,
+                String path,
+                Set<String> unscannedParams,
+                Set<String> scannedParams,
+                boolean isScanned,
+                boolean isRejected,
+                boolean isBypassed,
+                boolean isFromRepeater) {
+            this.id = id;
+            this.method = method;
+            this.host = host;
+            this.path = path;
+            this.unscannedParams = unscannedParams;
+            this.scannedParams = scannedParams;
+            this.isScanned = isScanned;
+            this.isRejected = isRejected;
+            this.isBypassed = isBypassed;
+            this.isFromRepeater = isFromRepeater;
+        }
     }
 
     /**

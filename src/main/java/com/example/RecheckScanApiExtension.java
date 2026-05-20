@@ -16,10 +16,20 @@ import javax.swing.table.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.ActionEvent;
+<<<<<<< HEAD
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.*;
 import java.util.List;
+import java.util.Properties;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+=======
+import java.io.StringReader;
+import java.io.StringWriter;
+import java.util.*;
+import java.util.List;
+>>>>>>> 82b979bd66d565af819e7bec45ac721fd890cf75
 
 /**
  * Lớp chính của extension "Recheck Scan API".
@@ -44,9 +54,11 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     private String exclude_extensions;
     private String savedOutputPath;
     private String exclude_status_code;
+    private String path_parameter_rules;
     private boolean highlightEnabled = false;
     private boolean noteEnabled = false;
     private boolean autoBypassNoParam = false;
+    private List<PathParameterRule> compiledPathParameterRules = new ArrayList<>();
 
     /**
      * Model cho JTable, chứa dữ liệu API được hiển thị trên giao diện.
@@ -115,7 +127,8 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 }
 
                 String host = request.httpService().host();
-                String path = request.pathWithoutQuery();
+                String rawPath = request.pathWithoutQuery();
+                String path = normalizePath(rawPath);
                 
                 // Trích xuất tất cả tham số từ cả URL và body.
                 Set<String> requestParams = extractParameters(request);
@@ -131,7 +144,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                     }).start();
                 } 
                 // Trường hợp 2: Request từ các công cụ khác (Proxy, Repeater) và nằm trong scope.
-                else if (api.scope().isInScope(request.url()) && !isExcludedByExtension(path)) {
+                else if (api.scope().isInScope(request.url()) && !isExcludedByExtension(rawPath)) {
                     // Nếu request từ Repeater, đánh dấu vào DB.
                     if (sourceType == ToolType.REPEATER) {
                         new Thread(() -> {
@@ -438,6 +451,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         JTextArea extensionArea = new JTextArea(exclude_extensions != null ? exclude_extensions : ".js,.svg,.css,.png,.jpg,.ttf,.ico,.html,.map,.gif,.woff2,.bcmap,.jpeg,.woff");
         JTextField outputPathField = new JTextField(savedOutputPath != null ? savedOutputPath : "");
         JTextField excludeStatusCodesField = new JTextField(exclude_status_code != null ? exclude_status_code : "404,405");
+        JTextArea pathParameterRulesArea = new JTextArea(path_parameter_rules != null ? path_parameter_rules : "");
         JButton browseButton = new JButton("Browse");
         browseButton.addActionListener(e -> {
             JFileChooser fileChooser = new JFileChooser();
@@ -466,6 +480,8 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             exclude_extensions = extensionArea.getText().trim();
             savedOutputPath = outputPathField.getText().trim();
             exclude_status_code = excludeStatusCodesField.getText().trim();
+            path_parameter_rules = pathParameterRulesArea.getText().trim();
+            compiledPathParameterRules = compilePathParameterRules(path_parameter_rules);
             autoBypassNoParam = autoBypassCheckBox.isSelected();
             saveSettings();
 
@@ -474,10 +490,15 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             databaseManager.initialize(savedOutputPath);
 
             // *** Áp dụng bypass cho dữ liệu cũ ***
-            if (autoBypassNoParam) {
+            if (!compiledPathParameterRules.isEmpty() || autoBypassNoParam) {
                 // Chạy trong một luồng riêng để không làm treo giao diện
                 new Thread(() -> {
-                    databaseManager.applyAutoBypassToOldRecords();
+                    if (!compiledPathParameterRules.isEmpty()) {
+                        databaseManager.normalizeStoredPaths(this::normalizePath);
+                    }
+                    if (autoBypassNoParam) {
+                        databaseManager.applyAutoBypassToOldRecords();
+                    }
                     // Tải lại dữ liệu trên luồng giao diện sau khi cập nhật xong
                     SwingUtilities.invokeLater(this::loadDataFromDb);
                 }).start();
@@ -488,7 +509,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
 
             JOptionPane.showMessageDialog(null, "Settings applied and project reloaded from database.");
         });
-        tabs.addTab("Settings", SettingsPanel.create(extensionArea, outputPathField, browseButton, highlightCheckBox, noteCheckBox, autoBypassCheckBox, applyButton, totalLbl, scannedLbl, rejectedLbl, bypassLbl, unverifiedLbl, excludeStatusCodesField));
+        tabs.addTab("Settings", SettingsPanel.create(extensionArea, outputPathField, browseButton, highlightCheckBox, noteCheckBox, autoBypassCheckBox, applyButton, totalLbl, scannedLbl, rejectedLbl, bypassLbl, unverifiedLbl, excludeStatusCodesField, pathParameterRulesArea));
         
         // Đăng ký tab chính vào giao diện Burp.
         JPanel mainPanel = new JPanel(new BorderLayout());
@@ -543,6 +564,108 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         return Arrays.stream(exclude_extensions.replace(" ", "").split(","))
                      .map(String::trim)
                      .anyMatch(ext -> !ext.isEmpty() && path.toLowerCase().endsWith(ext));
+    }
+
+    /**
+     * Chuẩn hóa các segment động trong URL path theo rule người dùng cấu hình.
+     * Ví dụ: /api/report/1684050854912458752/list -> /api/report/{id}/list.
+     */
+    private String normalizePath(String path) {
+        if (path == null || path.isBlank() || compiledPathParameterRules.isEmpty()) {
+            return path;
+        }
+
+        String[] segments = path.split("/", -1);
+        boolean changed = false;
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            if (segment.isEmpty()) {
+                continue;
+            }
+            for (PathParameterRule rule : compiledPathParameterRules) {
+                if (rule.matches(segment)) {
+                    segments[i] = rule.placeholder();
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        return changed ? String.join("/", segments) : path;
+    }
+
+    private List<PathParameterRule> compilePathParameterRules(String rulesText) {
+        List<PathParameterRule> rules = new ArrayList<>();
+        if (rulesText == null || rulesText.isBlank()) {
+            return rules;
+        }
+
+        for (String rawLine : rulesText.split("\\R")) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+
+            int separatorIndex = line.indexOf('=');
+            if (separatorIndex <= 0 || separatorIndex == line.length() - 1) {
+                api.logging().logToError("Invalid path parameter rule: " + line);
+                continue;
+            }
+
+            String placeholder = normalizePlaceholder(line.substring(0, separatorIndex).trim());
+            String spec = line.substring(separatorIndex + 1).trim();
+            Pattern pattern = compilePathParameterPattern(spec);
+            if (pattern != null) {
+                rules.add(new PathParameterRule(placeholder, pattern));
+            }
+        }
+        return rules;
+    }
+
+    private String normalizePlaceholder(String placeholder) {
+        if (placeholder.startsWith("{") && placeholder.endsWith("}")) {
+            return placeholder;
+        }
+        return "{" + placeholder.replace("{", "").replace("}", "") + "}";
+    }
+
+    private Pattern compilePathParameterPattern(String spec) {
+        String lowerSpec = spec.toLowerCase(Locale.ROOT);
+        if (lowerSpec.startsWith("regex:")) {
+            try {
+                return Pattern.compile(spec.substring("regex:".length()));
+            } catch (PatternSyntaxException e) {
+                api.logging().logToError("Invalid path parameter regex rule: " + spec + " - " + e.getMessage());
+                return null;
+            }
+        }
+
+        String[] parts = lowerSpec.split(":", 2);
+        String type = parts[0].trim();
+        Integer length = null;
+        if (parts.length == 2 && !parts[1].isBlank()) {
+            try {
+                length = Integer.parseInt(parts[1].trim());
+            } catch (NumberFormatException e) {
+                api.logging().logToError("Invalid path parameter length in rule: " + spec);
+                return null;
+            }
+            if (length <= 0) {
+                api.logging().logToError("Path parameter length must be positive in rule: " + spec);
+                return null;
+            }
+        }
+
+        String quantifier = length == null ? "+" : "{" + length + "}";
+        return switch (type) {
+            case "number", "numeric", "digits" -> Pattern.compile("[0-9]" + quantifier);
+            case "hex" -> Pattern.compile("[0-9a-fA-F]" + quantifier);
+            case "uuid" -> Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+            case "alnum", "alpha_numeric" -> Pattern.compile("[0-9a-zA-Z]" + quantifier);
+            default -> {
+                api.logging().logToError("Unsupported path parameter rule type: " + spec);
+                yield null;
+            }
+        };
     }
     
     /**
@@ -637,12 +760,13 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     private void saveSettings() {
         try {
             Properties props = new Properties();
-            props.setProperty("exclude_extensions", exclude_extensions);
+            props.setProperty("exclude_extensions", valueOrEmpty(exclude_extensions));
             props.setProperty("highlightEnabled", String.valueOf(highlightEnabled));
             props.setProperty("noteEnabled", String.valueOf(noteEnabled));
-            props.setProperty("outputPath", savedOutputPath);
+            props.setProperty("outputPath", valueOrEmpty(savedOutputPath));
             props.setProperty("autoBypassNoParam", String.valueOf(autoBypassNoParam));
-            props.setProperty("exclude_status_code", exclude_status_code);
+            props.setProperty("exclude_status_code", valueOrEmpty(exclude_status_code));
+            props.setProperty("path_parameter_rules", valueOrEmpty(path_parameter_rules));
             
             StringWriter writer = new StringWriter();
             props.store(writer, null);
@@ -650,6 +774,10 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(null, "Failed to save settings: " + ex.getMessage());
         }
+    }
+
+    private String valueOrEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     /**
@@ -667,7 +795,12 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 savedOutputPath = props.getProperty("outputPath", "");
                 autoBypassNoParam = Boolean.parseBoolean(props.getProperty("autoBypassNoParam", "false"));
                 exclude_status_code = props.getProperty("exclude_status_code", "");
+                path_parameter_rules = props.getProperty("path_parameter_rules", "");
             }
+            if (path_parameter_rules == null) {
+                path_parameter_rules = "";
+            }
+            compiledPathParameterRules = compilePathParameterRules(path_parameter_rules);
         } catch (Exception e) {
             api.logging().logToError("Failed to load settings: " + e.getMessage());
         }

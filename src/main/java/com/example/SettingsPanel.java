@@ -40,7 +40,8 @@ public class SettingsPanel {
             JLabel     rejectedLbl,
             JLabel     bypassLbl,
             JLabel     unverifiedLbl,
-            JTextField excludeStatusCodesField) {
+            JTextField excludeStatusCodesField,
+            JTextArea  pathParameterRulesArea) {
 
         /* ========= PANEL GỐC (ROOT) ========= */
         JPanel settingsPanel = new JPanel();
@@ -89,6 +90,25 @@ public class SettingsPanel {
         excludeStatusCodePanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, excludeStatusCodesField.getPreferredSize().height));
         excludeStatusCodePanel.setAlignmentX(Component.LEFT_ALIGNMENT);
         projectSettingsPanel.add(excludeStatusCodePanel);
+        projectSettingsPanel.add(Box.createRigidArea(new Dimension(0, 5)));
+
+        // Panel cho rule nhận diện path parameter động
+        JPanel pathParameterRulesPanel = new JPanel(new BorderLayout(5, 0));
+        pathParameterRulesPanel.add(new JLabel("URL Path Parameter Rules: "), BorderLayout.WEST);
+        pathParameterRulesArea.setRows(3);
+        pathParameterRulesArea.setToolTipText("One rule per line.");
+        JScrollPane pathRuleScroll = new JScrollPane(pathParameterRulesArea);
+        JLabel pathRuleHelpLabel = new JLabel("One rule per line. Examples: {id}=number:19, {uuid}=uuid, {hash}=hex:32, {slug}=regex:[a-z0-9-]+");
+        pathRuleHelpLabel.setFont(pathRuleHelpLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        pathRuleHelpLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+
+        JPanel pathRuleInputPanel = new JPanel(new BorderLayout(0, 3));
+        pathRuleInputPanel.add(pathRuleScroll, BorderLayout.CENTER);
+        pathRuleInputPanel.add(pathRuleHelpLabel, BorderLayout.SOUTH);
+        pathParameterRulesPanel.add(pathRuleInputPanel, BorderLayout.CENTER);
+        pathParameterRulesPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, pathParameterRulesPanel.getPreferredSize().height));
+        pathParameterRulesPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        projectSettingsPanel.add(pathParameterRulesPanel);
         projectSettingsPanel.add(Box.createRigidArea(new Dimension(0, 5)));
         
         centerPanel.add(projectSettingsPanel);
