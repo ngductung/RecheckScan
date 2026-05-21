@@ -246,14 +246,28 @@ public class DatabaseManager {
                 scannedDbSet.addAll(newlyScannedParams);
 
                 // Cập nhật CSDL với trạng thái mới.
-                String updateSql = "UPDATE api_log SET unscanned_params = ?, scanned_params = ?, is_scanned = ?, last_seen = CURRENT_TIMESTAMP WHERE host = ? AND path = ? AND method = ?";
+                // Khi đã scan xong toàn bộ params, clear các trạng thái loại trừ để tránh một API
+                // vừa là scanned vừa là rejected/bypassed.
+                boolean isFullyScanned = unscannedDbSet.isEmpty();
+                String updateSql = """
+                        UPDATE api_log
+                        SET unscanned_params = ?,
+                            scanned_params = ?,
+                            is_scanned = ?,
+                            is_rejected = CASE WHEN ? THEN 0 ELSE is_rejected END,
+                            is_bypassed = CASE WHEN ? THEN 0 ELSE is_bypassed END,
+                            last_seen = CURRENT_TIMESTAMP
+                        WHERE host = ? AND path = ? AND method = ?
+                        """;
                 try (PreparedStatement updateStmt = connection.prepareStatement(updateSql)) {
                     updateStmt.setString(1, setToString(unscannedDbSet));
                     updateStmt.setString(2, setToString(scannedDbSet));
-                    updateStmt.setBoolean(3, unscannedDbSet.isEmpty()); // is_scanned = true chỉ khi không còn gì để quét.
-                    updateStmt.setString(4, host);
-                    updateStmt.setString(5, path);
-                    updateStmt.setString(6, method);
+                    updateStmt.setBoolean(3, isFullyScanned); // is_scanned = true chỉ khi không còn gì để quét.
+                    updateStmt.setBoolean(4, isFullyScanned);
+                    updateStmt.setBoolean(5, isFullyScanned);
+                    updateStmt.setString(6, host);
+                    updateStmt.setString(7, path);
+                    updateStmt.setString(8, method);
                     updateStmt.executeUpdate();
                     return true;
                 }

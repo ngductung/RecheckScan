@@ -16,6 +16,8 @@ import javax.swing.table.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.ActionEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.*;
@@ -710,7 +712,91 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 }
             }
         });
+        attachStatusContextMenu(table);
         return table;
+    }
+
+    /**
+     * Gắn menu chuột phải để đổi trạng thái hàng loạt cho các dòng đang chọn.
+     */
+    private void attachStatusContextMenu(JTable table) {
+        JPopupMenu popupMenu = new JPopupMenu();
+        JMenuItem markBypassItem = new JMenuItem("Mark as Bypass");
+        markBypassItem.addActionListener(e -> applyStatusToSelectedRows(table, 6));
+        popupMenu.add(markBypassItem);
+
+        JMenuItem markRejectItem = new JMenuItem("Mark as Reject");
+        markRejectItem.addActionListener(e -> applyStatusToSelectedRows(table, 5));
+        popupMenu.add(markRejectItem);
+
+        table.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                showPopupIfNeeded(e);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                showPopupIfNeeded(e);
+            }
+
+            private void showPopupIfNeeded(MouseEvent e) {
+                if (!e.isPopupTrigger()) {
+                    return;
+                }
+
+                int viewRow = table.rowAtPoint(e.getPoint());
+                if (viewRow >= 0 && !table.isRowSelected(viewRow)) {
+                    table.setRowSelectionInterval(viewRow, viewRow);
+                }
+
+                if (table.getSelectedRowCount() > 0) {
+                    popupMenu.show(e.getComponent(), e.getX(), e.getY());
+                }
+            }
+        });
+    }
+
+    private void applyStatusToSelectedRows(JTable table, int statusColumn) {
+        int[] selectedViewRows = table.getSelectedRows();
+        if (selectedViewRows.length == 0) {
+            return;
+        }
+
+        List<Integer> selectedModelRows = new ArrayList<>();
+        for (int viewRow : selectedViewRows) {
+            selectedModelRows.add(table.convertRowIndexToModel(viewRow));
+        }
+
+        int updated = 0;
+        int skipped = 0;
+        for (int modelRow : selectedModelRows) {
+            if (canApplyStatus(modelRow, statusColumn)) {
+                tableModel.setValueAt(true, modelRow, statusColumn);
+                updated++;
+            } else {
+                skipped++;
+            }
+        }
+
+        if (skipped > 0) {
+            String statusName = statusColumn == 5 ? "Reject" : "Bypass";
+            JOptionPane.showMessageDialog(null,
+                    statusName + " applied to " + updated + " row(s). Skipped " + skipped + " row(s) because they are not eligible.");
+        }
+    }
+
+    private boolean canApplyStatus(int modelRow, int statusColumn) {
+        boolean isScanned = Boolean.TRUE.equals(tableModel.getValueAt(modelRow, 4));
+        if (isScanned) {
+            return false;
+        }
+
+        if (statusColumn == 5) {
+            return Boolean.TRUE.equals(tableModel.getValueAt(modelRow, 7));
+        }
+
+        return statusColumn == 6;
     }
 
     /**
