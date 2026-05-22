@@ -425,7 +425,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         JButton unscannedRefreshButton = new JButton("Refresh");
         unscannedRefreshButton.addActionListener(e -> unscannedSorter.setRowFilter(unscannedStatusFilter));
         JPanel unscannedPanel = createApiPanel("Search unscanned paths:", unscannedTable, unscannedRefreshButton, (keyword, sorter) -> {
-            RowFilter<Object, Object> textFilter = keyword.isEmpty() ? null : RowFilter.regexFilter("(?i)" + keyword, 2);
+            RowFilter<Object, Object> textFilter = createPathSearchFilter(keyword);
             sorter.setRowFilter(textFilter != null ? RowFilter.andFilter(Arrays.asList(unscannedStatusFilter, textFilter)) : unscannedStatusFilter);
         });
         tabs.addTab("Unscanned", unscannedPanel);
@@ -438,7 +438,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         JButton logsRefreshButton = new JButton("Refresh");
         logsRefreshButton.addActionListener(e -> logsSorter.setRowFilter(logsSorter.getRowFilter()));
         JPanel logsPanel = createApiPanel("Search all paths:", logsTable, logsRefreshButton, (keyword, sorter) -> {
-            sorter.setRowFilter(keyword.isEmpty() ? null : RowFilter.regexFilter("(?i)" + keyword, 2));
+            sorter.setRowFilter(createPathSearchFilter(keyword));
         });
         tabs.addTab("Logs", logsPanel);
 
@@ -831,6 +831,14 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     @FunctionalInterface
     interface SearchHandler {
         void apply(String keyword, TableRowSorter<DefaultTableModel> sorter);
+    }
+
+    private RowFilter<Object, Object> createPathSearchFilter(String keyword) {
+        if (keyword == null || keyword.isEmpty()) {
+            return null;
+        }
+
+        return RowFilter.regexFilter("(?i)" + Pattern.quote(keyword), 2);
     }
     
     /**
