@@ -21,6 +21,7 @@ import java.awt.event.MouseEvent;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.*;
+import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Properties;
 import java.util.regex.Pattern;
@@ -725,6 +726,12 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         markRejectItem.addActionListener(e -> applyStatusToSelectedRows(table, 5));
         popupMenu.add(markRejectItem);
 
+        popupMenu.addSeparator();
+
+        JMenuItem copyApiListItem = new JMenuItem("Copy Endpoint List");
+        copyApiListItem.addActionListener(e -> copySitemap(table));
+        popupMenu.add(copyApiListItem);
+
         table.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
@@ -780,6 +787,32 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             JOptionPane.showMessageDialog(null,
                     statusName + " applied to " + updated + " row(s). Skipped " + skipped + " row(s) because they are not eligible.");
         }
+    }
+
+    private void copySitemap(JTable table) {
+        int[] selectedViewRows = table.getSelectedRows();
+        if (selectedViewRows.length == 0) {
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (int viewRow : selectedViewRows) {
+            int modelRow = table.convertRowIndexToModel(viewRow);
+            String method = String.valueOf(tableModel.getValueAt(modelRow, 0));
+            String path = String.valueOf(tableModel.getValueAt(modelRow, 2));
+            int id = (int) tableModel.getValueAt(modelRow, 8);
+
+            Set<String> params = databaseManager.getAllParamsById(id);
+
+            sb.append(method).append(" ").append(path);
+            if (!params.isEmpty()) {
+                sb.append(" - param: ").append(params.stream().sorted().collect(Collectors.joining(", ")));
+            }
+            sb.append("\n");
+        }
+
+        StringSelection selection = new StringSelection(sb.toString().trim());
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
     }
 
     private boolean canApplyStatus(int modelRow, int statusColumn) {

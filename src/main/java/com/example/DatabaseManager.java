@@ -599,6 +599,23 @@ public class DatabaseManager {
         }
     }
     
+    public synchronized Set<String> getAllParamsById(int id) {
+        String sql = "SELECT unscanned_params, scanned_params FROM api_log WHERE id = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setInt(1, id);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                Set<String> params = new HashSet<>();
+                params.addAll(stringToSet(rs.getString("unscanned_params")));
+                params.addAll(stringToSet(rs.getString("scanned_params")));
+                return params;
+            }
+        } catch (SQLException e) {
+            api.logging().logToError("Failed to get all params by id: " + e.getMessage(), e);
+        }
+        return Collections.emptySet();
+    }
+
     /**
      * Lấy các cờ trạng thái (scanned, rejected, bypassed) của một API cụ thể.
      * Được sử dụng để quyết định việc highlight và thêm note.
