@@ -164,31 +164,27 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                          if (noteEnabled) response.annotations().setNotes("Bypassed");
                     } else {
                         // Nhánh 2b: Xử lý request thông thường để tìm và ghi nhận tham số mới.
-                        new Thread(() -> {
-                            databaseManager.insertOrUpdateApi(method, host, path, requestParams);
-                            // Tải lại UI để phản ánh thay đổi (nếu có param mới được thêm).
-                            SwingUtilities.invokeLater(RecheckScanApiExtension.this::loadDataFromDb);
-                        }).start();
-                    }
-                    // Luôn kiểm tra trạng thái cuối cùng trong CSDL để áp dụng highlight và note.
-                    Object[] status = databaseManager.getApiStatus(method, host, path);
-                    if (status != null) {
-                        boolean isScanned = (boolean) status[0];
-                        boolean isBypassed = (boolean) status[2];
-                        boolean isRejected = (boolean) status[1];
+                        // insertOrUpdateApi trả về trạng thái cuối cùng -> set annotation đồng bộ.
+                        Object[] status = databaseManager.insertOrUpdateApi(method, host, path, requestParams);
+                        if (status != null) {
+                            boolean isScanned = (boolean) status[0];
+                            boolean isBypassed = (boolean) status[2];
+                            boolean isRejected = (boolean) status[1];
 
-                        if (highlightEnabled && (isScanned || isBypassed)) {
-                            response.annotations().setHighlightColor(HighlightColor.YELLOW);
-                        }
-                        if (noteEnabled) {
-                            if (isScanned) {
-                                response.annotations().setNotes("Scanned");
-                            } else if (isBypassed) {
-                                response.annotations().setNotes("Bypassed");
-                            } else if (isRejected) {
-                                response.annotations().setNotes("Rejected");
+                            if (highlightEnabled && (isScanned || isBypassed)) {
+                                response.annotations().setHighlightColor(HighlightColor.YELLOW);
+                            }
+                            if (noteEnabled) {
+                                if (isScanned) {
+                                    response.annotations().setNotes("Scanned");
+                                } else if (isBypassed) {
+                                    response.annotations().setNotes("Bypassed");
+                                } else if (isRejected) {
+                                    response.annotations().setNotes("Rejected");
+                                }
                             }
                         }
+                        new Thread(() -> SwingUtilities.invokeLater(RecheckScanApiExtension.this::loadDataFromDb)).start();
                     }
                 }
 

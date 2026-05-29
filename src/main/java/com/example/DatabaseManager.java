@@ -162,8 +162,9 @@ public class DatabaseManager {
      * @param host          Host của request.
      * @param path          Path của request.
      * @param requestParams Tập hợp các tham số từ request hiện tại.
+     * @return Mảng Object chứa 3 giá trị boolean [isScanned, isRejected, isBypassed] sau khi cập nhật, hoặc null nếu lỗi.
      */
-    public synchronized void insertOrUpdateApi(String method, String host, String path, Set<String> requestParams) {
+    public synchronized Object[] insertOrUpdateApi(String method, String host, String path, Set<String> requestParams) {
         String selectSql = "SELECT unscanned_params, scanned_params FROM api_log WHERE host = ? AND path = ? AND method = ?";
         try (PreparedStatement selectStmt = connection.prepareStatement(selectSql)) {
             selectStmt.setString(1, host);
@@ -209,7 +210,9 @@ public class DatabaseManager {
             }
         } catch (SQLException e) {
             api.logging().logToError("Error during insert/update API: " + e.getMessage(), e);
+            return null;
         }
+        return getApiStatus(method, host, path);
     }
 
     /**
