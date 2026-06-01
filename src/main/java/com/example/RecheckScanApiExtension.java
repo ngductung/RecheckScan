@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+import java.util.stream.Collectors;
 
 /**
  * Lớp chính của extension "Recheck Scan API".
@@ -710,6 +711,66 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 }
             }
         });
+
+        // Tạo context menu cho right-click
+        JPopupMenu contextMenu = new JPopupMenu();
+        
+        // MenuItem "Copy API List"
+        JMenuItem copyApiListItem = new JMenuItem("Copy API List");
+        copyApiListItem.addActionListener(e -> {
+            int[] selectedRows = table.getSelectedRows();
+            if (selectedRows.length > 0) {
+                StringBuilder sb = new StringBuilder();
+                for (int viewRow : selectedRows) {
+                    int modelRow = table.convertRowIndexToModel(viewRow);
+                    String method = (String) tableModel.getValueAt(modelRow, 0);
+                    String path = (String) tableModel.getValueAt(modelRow, 2);
+                    Integer id = (Integer) tableModel.getValueAt(modelRow, 8);
+                    
+                    if (method != null && path != null && id != null) {
+                        // Lấy tất cả params từ DB bằng id
+                        Set<String> allParams = databaseManager.getAllParamsById(id);
+                        
+                        sb.append(method).append(" ").append(path);
+                        if (!allParams.isEmpty()) {
+                            // Sắp xếp params theo alphabet và hiển thị
+                            String sortedParams = allParams.stream()
+                                    .sorted()
+                                    .collect(Collectors.joining(", "));
+                            sb.append(" - param: ").append(sortedParams);
+                        }
+                        sb.append("\n");
+                    }
+                }
+                StringSelection selection = new StringSelection(sb.toString().trim());
+                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
+            }
+        });
+        contextMenu.add(copyApiListItem);
+
+        // Đăng ký mouse listener cho right-click
+        table.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mousePressed(java.awt.event.MouseEvent e) {
+                showContextMenu(e);
+            }
+            
+            @Override
+            public void mouseReleased(java.awt.event.MouseEvent e) {
+                showContextMenu(e);
+            }
+            
+            private void showContextMenu(java.awt.event.MouseEvent e) {
+                if (e.isPopupTrigger()) {
+                    int row = table.rowAtPoint(e.getPoint());
+                    if (row >= 0 && !table.isRowSelected(row)) {
+                        table.setRowSelectionInterval(row, row);
+                    }
+                    contextMenu.show(table, e.getX(), e.getY());
+                }
+            }
+        });
+        
         return table;
     }
 

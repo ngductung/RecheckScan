@@ -321,12 +321,36 @@ public class DatabaseManager {
     }
     
     /**
+     * Lấy tất cả tham số (cả unscanned và scanned) của một API dựa trên id.
+     * Các tham số được hợp nhất và loại bỏ trùng lặp.
+     *
+     * @param id ID duy nhất của dòng trong CSDL.
+     * @return Một Set chứa tất cả tên tham số, hoặc empty set nếu không tìm thấy.
+     */
+    public Set<String> getAllParamsById(int id) {
+        String sql = "SELECT unscanned_params, scanned_params FROM api_log WHERE id = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setInt(1, id);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                Set<String> allParams = new HashSet<>();
+                allParams.addAll(stringToSet(rs.getString("unscanned_params")));
+                allParams.addAll(stringToSet(rs.getString("scanned_params")));
+                return allParams;
+            }
+        } catch (SQLException e) {
+            api.logging().logToError("Failed to get params by id: " + e.getMessage(), e);
+        }
+        return new HashSet<>();
+    }
+
+    /**
      * Chuyển đổi một chuỗi (dữ liệu từ DB) thành một Set các chuỗi.
      *
      * @param str Chuỗi được phân tách bởi '|'.
      * @return Một Set các tham số.
      */
-    private Set<String> stringToSet(String str) {
+    static Set<String> stringToSet(String str) {
         if (str == null || str.isBlank()) return new HashSet<>();
         return new HashSet<>(Arrays.asList(str.split("\\|")));
     }
