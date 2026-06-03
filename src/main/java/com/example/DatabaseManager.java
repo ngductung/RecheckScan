@@ -585,6 +585,27 @@ public class DatabaseManager {
     }
 
     /**
+     * Xóa nhiều API theo danh sách ID.
+     *
+     * @param ids Danh sách ID cần xóa.
+     * @return Số lượng bản ghi đã xóa.
+     */
+    public synchronized int deleteApisByIds(List<Integer> ids) {
+        if (ids == null || ids.isEmpty()) return 0;
+        String placeholders = ids.stream().map(i -> "?").collect(Collectors.joining(","));
+        String sql = "DELETE FROM api_log WHERE id IN (" + placeholders + ")";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            for (int i = 0; i < ids.size(); i++) {
+                stmt.setInt(i + 1, ids.get(i));
+            }
+            return stmt.executeUpdate();
+        } catch (SQLException e) {
+            api.logging().logToError("Failed to delete APIs: " + e.getMessage(), e);
+            return 0;
+        }
+    }
+
+    /**
      * Đóng kết nối cơ sở dữ liệu khi extension được gỡ bỏ.
      * Rất quan trọng để giải phóng tài nguyên.
      */

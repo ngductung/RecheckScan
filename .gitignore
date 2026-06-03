@@ -141,3 +141,7 @@ credentials.txt
 *.pem
 *.p12
 *.keystore
+
+
+# codegraph
+.codegraph/

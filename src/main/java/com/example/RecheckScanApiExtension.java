@@ -728,6 +728,12 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
 
         popupMenu.addSeparator();
 
+        JMenuItem deleteItem = new JMenuItem("Delete");
+        deleteItem.addActionListener(e -> deleteSelectedRows(table));
+        popupMenu.add(deleteItem);
+
+        popupMenu.addSeparator();
+
         JMenuItem copyApiListItem = new JMenuItem("Copy Endpoint List");
         copyApiListItem.addActionListener(e -> copySitemap(table));
         popupMenu.add(copyApiListItem);
@@ -826,6 +832,29 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         }
 
         return statusColumn == 6;
+    }
+
+    private void deleteSelectedRows(JTable table) {
+        int[] selectedViewRows = table.getSelectedRows();
+        if (selectedViewRows.length == 0) return;
+
+        int confirm = JOptionPane.showConfirmDialog(null,
+                "Delete " + selectedViewRows.length + " selected API(s)?",
+                "Confirm Delete", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) return;
+
+        List<Integer> dbIds = new ArrayList<>();
+        for (int viewRow : selectedViewRows) {
+            int modelRow = table.convertRowIndexToModel(viewRow);
+            dbIds.add((Integer) tableModel.getValueAt(modelRow, 8));
+        }
+
+        new Thread(() -> {
+            int deleted = databaseManager.deleteApisByIds(dbIds);
+            if (deleted > 0) {
+                SwingUtilities.invokeLater(this::loadDataFromDb);
+            }
+        }).start();
     }
 
     /**
