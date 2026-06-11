@@ -726,6 +726,14 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         markRejectItem.addActionListener(e -> applyStatusToSelectedRows(table, 5));
         popupMenu.add(markRejectItem);
 
+        popupMenu.addSeparator();
+
+        JMenuItem deleteSelectedItem = new JMenuItem("Delete selected");
+        deleteSelectedItem.addActionListener(e -> deleteSelectedRows(table));
+        popupMenu.add(deleteSelectedItem);
+
+        popupMenu.addSeparator();
+
         JMenuItem copyApiListItem = new JMenuItem("Copy Endpoint List");
         copyApiListItem.addActionListener(e -> copySitemap(table));
         popupMenu.add(copyApiListItem);
@@ -811,6 +819,45 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
 
         StringSelection selection = new StringSelection(sb.toString().trim());
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
+    }
+
+    private void deleteSelectedRows(JTable table) {
+        int[] selectedViewRows = table.getSelectedRows();
+        if (selectedViewRows.length == 0) {
+            return;
+        }
+
+        List<Integer> idsToDelete = new ArrayList<>();
+        for (int viewRow : selectedViewRows) {
+            int modelRow = table.convertRowIndexToModel(viewRow);
+            String host = String.valueOf(tableModel.getValueAt(modelRow, 1));
+            String path = String.valueOf(tableModel.getValueAt(modelRow, 2));
+
+            boolean inScope = api.scope().isInScope("http://" + host + path)
+                    || api.scope().isInScope("https://" + host + path);
+            if (inScope) {
+                continue;
+            }
+
+            int id = (int) tableModel.getValueAt(modelRow, 8);
+            idsToDelete.add(id);
+        }
+
+        if (idsToDelete.isEmpty()) {
+            return;
+        }
+
+        int confirm = JOptionPane.showConfirmDialog(
+                null,
+                "Are you sure you want to delete " + idsToDelete.size() + " selected API(s)?",
+                "Confirm Delete",
+                JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) {
+            return;
+        }
+
+        databaseManager.deleteApisByIds(idsToDelete);
+        loadDataFromDb();
     }
 
     private boolean canApplyStatus(int modelRow, int statusColumn) {
