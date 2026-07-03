@@ -24,6 +24,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Properties;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -567,6 +568,16 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             return path;
         }
 
+        String normalizedPath = path;
+        for (PathParameterRule rule : compiledPathParameterRules) {
+            normalizedPath = rule.isPathAware()
+                    ? applyPathAwareRule(normalizedPath, rule)
+                    : applySegmentRule(normalizedPath, rule);
+        }
+        return normalizedPath;
+    }
+
+    private String applySegmentRule(String path, PathParameterRule rule) {
         String[] segments = path.split("/", -1);
         boolean changed = false;
         for (int i = 0; i < segments.length; i++) {
@@ -574,15 +585,42 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             if (segment.isEmpty()) {
                 continue;
             }
-            for (PathParameterRule rule : compiledPathParameterRules) {
-                if (rule.matches(segment)) {
-                    segments[i] = rule.placeholder();
-                    changed = true;
-                    break;
-                }
+            if (rule.matches(segment)) {
+                segments[i] = rule.placeholder();
+                changed = true;
             }
         }
         return changed ? String.join("/", segments) : path;
+    }
+
+    private String applyPathAwareRule(String path, PathParameterRule rule) {
+        Matcher matcher = rule.pattern().matcher(path);
+        StringBuffer normalizedPath = new StringBuffer();
+        boolean changed = false;
+        while (matcher.find()) {
+            String replacement = buildPathAwareReplacement(matcher, rule.placeholder());
+            matcher.appendReplacement(normalizedPath, Matcher.quoteReplacement(replacement));
+            changed = true;
+        }
+        matcher.appendTail(normalizedPath);
+        return changed ? normalizedPath.toString() : path;
+    }
+
+    private String buildPathAwareReplacement(Matcher matcher, String placeholder) {
+        String match = matcher.group();
+        for (int groupIndex = 1; groupIndex <= matcher.groupCount(); groupIndex++) {
+            if (matcher.start(groupIndex) >= 0) {
+                int relativeStart = matcher.start(groupIndex) - matcher.start();
+                int relativeEnd = matcher.end(groupIndex) - matcher.start();
+                return match.substring(0, relativeStart) + placeholder + match.substring(relativeEnd);
+            }
+        }
+
+        int lastSlashIndex = match.lastIndexOf('/');
+        if (lastSlashIndex >= 0) {
+            return match.substring(0, lastSlashIndex + 1) + placeholder;
+        }
+        return placeholder;
     }
 
     private List<PathParameterRule> compilePathParameterRules(String rulesText) {
@@ -605,12 +643,18 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
 
             String placeholder = normalizePlaceholder(line.substring(0, separatorIndex).trim());
             String spec = line.substring(separatorIndex + 1).trim();
+            boolean pathAware = isPathAwareRegexSpec(spec);
             Pattern pattern = compilePathParameterPattern(spec);
             if (pattern != null) {
-                rules.add(new PathParameterRule(placeholder, pattern));
+                rules.add(new PathParameterRule(placeholder, pattern, pathAware));
             }
         }
         return rules;
+    }
+
+    private boolean isPathAwareRegexSpec(String spec) {
+        String lowerSpec = spec.toLowerCase(Locale.ROOT);
+        return lowerSpec.startsWith("regex:") && spec.substring("regex:".length()).contains("/");
     }
 
     private String normalizePlaceholder(String placeholder) {

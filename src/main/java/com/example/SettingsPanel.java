@@ -96,9 +96,9 @@ public class SettingsPanel {
         JPanel pathParameterRulesPanel = new JPanel(new BorderLayout(5, 0));
         pathParameterRulesPanel.add(new JLabel("URL Path Parameter Rules: "), BorderLayout.WEST);
         pathParameterRulesArea.setRows(3);
-        pathParameterRulesArea.setToolTipText("One rule per line.");
+        pathParameterRulesArea.setToolTipText("One rule per line. Regex rules containing / can match path context and replace the final matched segment.");
         JScrollPane pathRuleScroll = new JScrollPane(pathParameterRulesArea);
-        JLabel pathRuleHelpLabel = new JLabel("One rule per line. Examples: {id}=number:19, {uuid}=uuid, {hash}=hex:32, {slug}=regex:[a-z0-9-]+");
+        JLabel pathRuleHelpLabel = new JLabel("One rule per line. Examples: {id}=number:19, {uuid}=uuid, {memberUUID}=regex:member-invitations\\/[a-z0-9-]{36}");
         pathRuleHelpLabel.setFont(pathRuleHelpLabel.getFont().deriveFont(Font.PLAIN, 11f));
         pathRuleHelpLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
 
