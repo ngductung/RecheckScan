@@ -145,3 +145,7 @@ credentials.txt
 
 # codegraph
 .codegraph/
+.claude/
+AGENTS.md
+.gitignore
+CLAUDE.md

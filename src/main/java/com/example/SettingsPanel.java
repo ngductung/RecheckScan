@@ -59,9 +59,25 @@ public class SettingsPanel {
         projectSettingsPanel.setLayout(new BoxLayout(projectSettingsPanel, BoxLayout.Y_AXIS));
         projectSettingsPanel.setBorder(createTitledBorder("Project Settings")); // Tạo đường viền có tiêu đề
 
+        JLabel outputPathLabel = new JLabel("Log/DB Output Path: ");
+        JLabel excludeExtensionLabel = new JLabel("Exclude Extensions (comma separated): ");
+        JLabel excludeStatusCodeLabel = new JLabel("Exclude Status Codes (comma separated): ");
+        JLabel pathParameterRulesLabel = new JLabel("URL Path Parameter Rules: ");
+        int projectSettingsLabelWidth = Math.max(
+                Math.max(outputPathLabel.getPreferredSize().width, excludeExtensionLabel.getPreferredSize().width),
+                Math.max(excludeStatusCodeLabel.getPreferredSize().width, pathParameterRulesLabel.getPreferredSize().width)
+        );
+        for (JLabel label : new JLabel[]{outputPathLabel, excludeExtensionLabel, excludeStatusCodeLabel, pathParameterRulesLabel}) {
+            Dimension labelSize = new Dimension(projectSettingsLabelWidth, label.getPreferredSize().height);
+            label.setPreferredSize(labelSize);
+            label.setMinimumSize(labelSize);
+            label.setHorizontalAlignment(SwingConstants.LEFT);
+        }
+        pathParameterRulesLabel.setVerticalAlignment(SwingConstants.TOP);
+
         // Panel cho đường dẫn output và nút Browse
         JPanel outputPathPanel = new JPanel(new BorderLayout(5, 0));
-        outputPathPanel.add(new JLabel("Log/DB Output Path: "), BorderLayout.WEST);
+        outputPathPanel.add(outputPathLabel, BorderLayout.WEST);
         outputPathPanel.add(outputPathField, BorderLayout.CENTER);
         outputPathPanel.add(browseButton, BorderLayout.EAST);
         // Giới hạn chiều cao tối đa để không bị giãn ra quá lớn.
@@ -72,7 +88,7 @@ public class SettingsPanel {
 
         // Panel cho Exclude Extensions
         JPanel excludeExtensionPanel = new JPanel(new BorderLayout(5, 0));
-        excludeExtensionPanel.add(new JLabel("Exclude Extensions (comma separated): "), BorderLayout.WEST);
+        excludeExtensionPanel.add(excludeExtensionLabel, BorderLayout.WEST);
         extensionArea.setRows(1);
         JScrollPane extScroll = new JScrollPane(extensionArea);
         extScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, extensionArea.getPreferredSize().height + 10));
@@ -85,7 +101,7 @@ public class SettingsPanel {
 
         // Panel cho Exclude Status Codes
         JPanel excludeStatusCodePanel = new JPanel(new BorderLayout(5, 0));
-        excludeStatusCodePanel.add(new JLabel("Exclude Status Codes (comma separated): "), BorderLayout.WEST);
+        excludeStatusCodePanel.add(excludeStatusCodeLabel, BorderLayout.WEST);
         excludeStatusCodePanel.add(excludeStatusCodesField, BorderLayout.CENTER);
         excludeStatusCodePanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, excludeStatusCodesField.getPreferredSize().height));
         excludeStatusCodePanel.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -94,23 +110,73 @@ public class SettingsPanel {
 
         // Panel cho rule nhận diện path parameter động
         JPanel pathParameterRulesPanel = new JPanel(new BorderLayout(5, 0));
-        pathParameterRulesPanel.add(new JLabel("URL Path Parameter Rules: "), BorderLayout.WEST);
+        pathParameterRulesPanel.add(pathParameterRulesLabel, BorderLayout.WEST);
         pathParameterRulesArea.setRows(3);
         pathParameterRulesArea.setToolTipText("One rule per line. Regex rules containing / can match path context and replace the final matched segment.");
         JScrollPane pathRuleScroll = new JScrollPane(pathParameterRulesArea);
+        int pathRuleInitialHeight = pathRuleScroll.getPreferredSize().height;
+        pathRuleScroll.setPreferredSize(new Dimension(1, pathRuleInitialHeight));
         JLabel pathRuleHelpLabel = new JLabel("One rule per line. Examples: {id}=number:19, {uuid}=uuid, {memberUUID}=regex:member-invitations\\/[a-z0-9-]{36}");
         pathRuleHelpLabel.setFont(pathRuleHelpLabel.getFont().deriveFont(Font.PLAIN, 11f));
         pathRuleHelpLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
 
+        JPanel pathRuleResizeHandle = new JPanel();
+        pathRuleResizeHandle.setPreferredSize(new Dimension(1, 8));
+        pathRuleResizeHandle.setCursor(Cursor.getPredefinedCursor(Cursor.S_RESIZE_CURSOR));
+        pathRuleResizeHandle.setToolTipText("Drag to resize");
+        Color resizeHandleColor = UIManager.getColor("Separator.foreground");
+        if (resizeHandleColor == null) {
+            resizeHandleColor = UIManager.getColor("controlShadow");
+        }
+        if (resizeHandleColor == null) {
+            resizeHandleColor = Color.LIGHT_GRAY;
+        }
+        pathRuleResizeHandle.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, resizeHandleColor));
+
+        JPanel pathRuleFooterPanel = new JPanel(new BorderLayout(0, 2));
+        pathRuleFooterPanel.add(pathRuleHelpLabel, BorderLayout.CENTER);
+        pathRuleFooterPanel.add(pathRuleResizeHandle, BorderLayout.SOUTH);
+
         JPanel pathRuleInputPanel = new JPanel(new BorderLayout(0, 3));
         pathRuleInputPanel.add(pathRuleScroll, BorderLayout.CENTER);
-        pathRuleInputPanel.add(pathRuleHelpLabel, BorderLayout.SOUTH);
+        pathRuleInputPanel.add(pathRuleFooterPanel, BorderLayout.SOUTH);
         pathParameterRulesPanel.add(pathRuleInputPanel, BorderLayout.CENTER);
         pathParameterRulesPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, pathParameterRulesPanel.getPreferredSize().height));
         pathParameterRulesPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        final int minPathRuleHeight = pathRuleInitialHeight;
+        final int maxPathRuleHeight = Math.max(minPathRuleHeight, 260);
+        java.awt.event.MouseAdapter pathRuleResizeListener = new java.awt.event.MouseAdapter() {
+            private int dragStartY;
+            private int dragStartHeight;
+
+            @Override
+            public void mousePressed(java.awt.event.MouseEvent e) {
+                dragStartY = e.getLocationOnScreen().y;
+                dragStartHeight = pathRuleScroll.getHeight() > 0
+                        ? pathRuleScroll.getHeight()
+                        : pathRuleScroll.getPreferredSize().height;
+            }
+
+            @Override
+            public void mouseDragged(java.awt.event.MouseEvent e) {
+                int nextHeight = dragStartHeight + e.getLocationOnScreen().y - dragStartY;
+                nextHeight = Math.max(minPathRuleHeight, Math.min(maxPathRuleHeight, nextHeight));
+                pathRuleScroll.setPreferredSize(new Dimension(pathRuleScroll.getPreferredSize().width, nextHeight));
+                pathParameterRulesPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, pathParameterRulesPanel.getPreferredSize().height));
+                pathRuleInputPanel.revalidate();
+                pathParameterRulesPanel.revalidate();
+                projectSettingsPanel.revalidate();
+                settingsPanel.revalidate();
+                settingsPanel.repaint();
+            }
+        };
+        pathRuleResizeHandle.addMouseListener(pathRuleResizeListener);
+        pathRuleResizeHandle.addMouseMotionListener(pathRuleResizeListener);
+
         projectSettingsPanel.add(pathParameterRulesPanel);
         projectSettingsPanel.add(Box.createRigidArea(new Dimension(0, 5)));
-        
+
         centerPanel.add(projectSettingsPanel);
         centerPanel.add(Box.createRigidArea(new Dimension(0, 10))); // Thêm khoảng trống giữa các nhóm
 
@@ -123,12 +189,12 @@ public class SettingsPanel {
         controlsPanel.add(highlightCheckBox);
         controlsPanel.add(noteCheckBox);
         controlsPanel.add(autoBypassCheckBox);
-        
+
         centerPanel.add(controlsPanel);
 
         /* ========= PANEL PHÍA ĐÔNG (EAST) - Chứa thống kê ========= */
         JPanel eastPanel = new JPanel(new BorderLayout());
-        
+
         JPanel statsPanel = new JPanel();
         statsPanel.setBorder(createTitledBorder("Statistics"));
         // GridLayout để các label thống kê được xếp đều nhau.
@@ -142,7 +208,7 @@ public class SettingsPanel {
             lbl.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 0));
             statsPanel.add(lbl);
         }
-        
+
         eastPanel.add(statsPanel, BorderLayout.NORTH);
 
 
@@ -151,7 +217,7 @@ public class SettingsPanel {
         applyButton.setPreferredSize(new Dimension(150, 32));
         applyButton.setFont(applyButton.getFont().deriveFont(Font.BOLD, 13f));
         southPanel.add(applyButton);
-        
+
         /* ========= LẮP RÁP CÁC PANEL VÀO PANEL GỐC ========= */
         settingsPanel.add(centerPanel, BorderLayout.CENTER);
         settingsPanel.add(eastPanel, BorderLayout.EAST);
