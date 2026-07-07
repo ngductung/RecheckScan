@@ -43,6 +43,7 @@
 
     <!-- Build configuration -->
     <build>
+        <finalName>RecheckScan</finalName>
         <plugins>
             <!-- Maven Shade Plugin - Creates fat JAR with all dependencies -->
             <plugin>

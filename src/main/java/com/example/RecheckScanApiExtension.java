@@ -403,11 +403,29 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
 
         // Bố cục chính của tab extension.
         JTabbedPane tabs = new JTabbedPane();
+        java.util.function.Supplier<TableRowSorter<DefaultTableModel>> sorterFactory = () -> {
+            TableRowSorter<DefaultTableModel> sorter = new TableRowSorter<>(tableModel) {
+                @Override
+                public void toggleSortOrder(int column) {
+                    List<? extends SortKey> sortKeys = getSortKeys();
+                    if (!sortKeys.isEmpty()) {
+                        SortKey primaryKey = sortKeys.get(0);
+                        if (primaryKey.getColumn() == column && primaryKey.getSortOrder() == SortOrder.DESCENDING) {
+                            setSortKeys(Collections.emptyList());
+                            return;
+                        }
+                    }
+                    super.toggleSortOrder(column);
+                }
+            };
+            sorter.setMaxSortKeys(1);
+            return sorter;
+        };
 
         // --- Cài đặt Tab "Unscanned" ---
         JTable unscannedTable = createCommonTable();
         setupHiddenColumns(unscannedTable); // Ẩn các cột cần thiết (Repeater, id)
-        final TableRowSorter<DefaultTableModel> unscannedSorter = new TableRowSorter<>(tableModel);
+        final TableRowSorter<DefaultTableModel> unscannedSorter = sorterFactory.get();
         unscannedTable.setRowSorter(unscannedSorter);
 
         // Tạo bộ lọc để chỉ hiển thị các dòng chưa có trạng thái nào (unscanned, unrejected, unbypassed).
@@ -431,7 +449,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         // --- Cài đặt Tab "Logs" ---
         JTable logsTable = createCommonTable();
         setupHiddenColumns(logsTable); // Ẩn các cột cần thiết (Repeater, id)
-        final TableRowSorter<DefaultTableModel> logsSorter = new TableRowSorter<>(tableModel);
+        final TableRowSorter<DefaultTableModel> logsSorter = sorterFactory.get();
         logsTable.setRowSorter(logsSorter);
         JButton logsRefreshButton = new JButton("Refresh");
         logsRefreshButton.addActionListener(e -> logsSorter.setRowFilter(logsSorter.getRowFilter()));
@@ -956,7 +974,15 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             return null;
         }
 
-        return RowFilter.regexFilter("(?i)" + Pattern.quote(keyword), 2);
+        List<RowFilter<Object, Object>> filters = new ArrayList<>();
+        filters.add(RowFilter.regexFilter("(?i)" + Pattern.quote(keyword), 2));
+
+        String normalizedKeyword = normalizePath(keyword);
+        if (normalizedKeyword != null && !normalizedKeyword.equals(keyword)) {
+            filters.add(RowFilter.regexFilter("(?i)" + Pattern.quote(normalizedKeyword), 2));
+        }
+
+        return filters.size() == 1 ? filters.get(0) : RowFilter.orFilter(filters);
     }
     
     /**
