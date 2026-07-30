@@ -991,10 +991,15 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     private void saveSettings() {
         try {
             Properties props = new Properties();
+            String settingsStr = api.persistence().extensionData().getString("settings");
+            if (settingsStr != null && !settingsStr.isEmpty()) {
+                props.load(new StringReader(settingsStr));
+            }
             props.setProperty("exclude_extensions", valueOrEmpty(exclude_extensions));
             props.setProperty("highlightEnabled", String.valueOf(highlightEnabled));
             props.setProperty("noteEnabled", String.valueOf(noteEnabled));
-            props.setProperty("outputPath", valueOrEmpty(savedOutputPath));
+            props.remove("outputPath");
+            props.setProperty(currentOutputPathKey(), valueOrEmpty(savedOutputPath));
             props.setProperty("autoBypassNoParam", String.valueOf(autoBypassNoParam));
             props.setProperty("exclude_status_code", valueOrEmpty(exclude_status_code));
             props.setProperty("path_parameter_rules", valueOrEmpty(path_parameter_rules));
@@ -1011,6 +1016,20 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         return value == null ? "" : value;
     }
 
+    private String currentOutputPathKey() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (osName.contains("win")) {
+            return "outputPath.windows";
+        }
+        if (osName.contains("linux")) {
+            return "outputPath.linux";
+        }
+        if (osName.contains("mac")) {
+            return "outputPath.mac";
+        }
+        return "outputPath.other";
+    }
+
     /**
      * Tải các cài đặt từ persistence extension data khi khởi động.
      */
@@ -1023,7 +1042,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 exclude_extensions = props.getProperty("exclude_extensions", "");
                 highlightEnabled = Boolean.parseBoolean(props.getProperty("highlightEnabled", "false"));
                 noteEnabled = Boolean.parseBoolean(props.getProperty("noteEnabled", "false"));
-                savedOutputPath = props.getProperty("outputPath", "");
+                savedOutputPath = props.getProperty(currentOutputPathKey(), "");
                 autoBypassNoParam = Boolean.parseBoolean(props.getProperty("autoBypassNoParam", "false"));
                 exclude_status_code = props.getProperty("exclude_status_code", "");
                 path_parameter_rules = props.getProperty("path_parameter_rules", "");
