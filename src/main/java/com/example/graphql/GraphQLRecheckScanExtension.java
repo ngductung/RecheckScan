@@ -83,6 +83,8 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
     private final ConcurrentHashMap<String, HttpRequest> requestCache = new ConcurrentHashMap<>();
     /** Audit dùng chung cho tính năng "Active scan" (tạo lười, tái sử dụng). */
     private Audit activeAudit;
+    /** Cờ để log 1 lần khi lần đầu nhận request từ Scanner (chẩn đoán). */
+    private volatile boolean scannerSeenLogged = false;
 
     // Chỉ số cột của TableModel.
     private static final int COL_OP_TYPE = 0;
@@ -178,13 +180,21 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         String host = request.httpService().host();
         final String endpoint = path;
 
-        // Request từ Scanner -> đánh dấu argument đã scan.
+        // Request từ Scanner -> đánh dấu operation đã scan.
         if (sourceType == ToolType.SCANNER) {
+            // Log 1 lần để xác nhận handler CÓ nhận được traffic của Scanner.
+            if (!scannerSeenLogged) {
+                scannerSeenLogged = true;
+                api.logging().logToOutput("[RecheckScan-GraphQL] Đã nhận request đầu tiên từ Scanner -> auto-mark hoạt động.");
+            }
             new Thread(() -> {
                 boolean updated = false;
                 for (GraphQLOperation op : operations) {
-                    if (databaseManager.processScannedArgs(host, endpoint, op.operationType(), op.rootField(), op.argumentNames())) {
+                    // Scanner biến đổi giá trị nên khớp từng argument không đáng tin -> đánh dấu cả operation.
+                    if (databaseManager.markOperationScanned(host, endpoint, op.operationType(), op.rootField())) {
                         updated = true;
+                        api.logging().logToOutput("[RecheckScan-GraphQL] Marked scanned: "
+                                + op.operationType() + " " + op.rootField() + " @ " + host + endpoint);
                     }
                 }
                 if (updated) {
@@ -728,6 +738,31 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         JMenuItem scanItem = new JMenuItem("Active scan (send to Scanner)");
         scanItem.addActionListener(e -> sendSelectedRows(table, SendAction.SCAN));
         contextMenu.add(scanItem);
+
+        // Đánh dấu đã scan thủ công (khi auto-mark không bắt được).
+        contextMenu.addSeparator();
+        JMenuItem markScannedItem = new JMenuItem("Mark as scanned");
+        markScannedItem.addActionListener(e -> {
+            int[] rows = table.getSelectedRows();
+            if (rows.length == 0) {
+                return;
+            }
+            List<Integer> ids = new ArrayList<>();
+            for (int viewRow : rows) {
+                int m = table.convertRowIndexToModel(viewRow);
+                Integer id = (Integer) tableModel.getValueAt(m, COL_ID);
+                if (id != null) {
+                    ids.add(id);
+                }
+            }
+            new Thread(() -> {
+                for (Integer id : ids) {
+                    databaseManager.markScannedById(id);
+                }
+                SwingUtilities.invokeLater(this::loadDataFromDb);
+            }).start();
+        });
+        contextMenu.add(markScannedItem);
 
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override

@@ -2,6 +2,14 @@
 
 ## [2.1-GRAPHQL] - 2026-08-28
 
+### Fixed (cập nhật 3)
+- ✅ **Auto-mark Scanned tin cậy hơn**: khi có request từ Scanner chạm tới một operation đã biết,
+  tool đánh dấu **cả operation** là Scanned thay vì đòi khớp từng argument (Scanner biến đổi giá trị
+  nên khớp arg hay trượt). Không tạo dòng mới từ request Scanner.
+- ✅ Thêm menu **Mark as scanned** thủ công (chuột phải) khi cần tự đánh dấu.
+- ✅ Thêm log `[RecheckScan-GraphQL]` (Extensions → Output) để xác nhận handler có nhận traffic
+  Scanner và operation nào vừa được đánh dấu.
+
 ### Added (cập nhật 2)
 - ✅ **Context menu Send**: chuột phải trên bảng → **Send to Repeater / Intruder / Organizer /
   Active scan (Scanner)**. Tool cache request thật gần nhất theo từng đơn vị

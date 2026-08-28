@@ -241,6 +241,77 @@ public class GraphQLDatabaseManager {
     }
 
     /**
+     * Đánh dấu CẢ operation là đã scan (gom hết unscanned_args sang scanned_args, is_scanned=1).
+     * Chỉ áp dụng khi operation đã tồn tại và chưa scan hết — KHÔNG tạo dòng mới từ request Scanner
+     * (vì request Scanner thường đã bị biến đổi). Dùng cho luồng: có request từ Scanner chạm tới
+     * operation này => coi như operation đã được audit.
+     *
+     * @return true nếu có thay đổi.
+     */
+    public synchronized boolean markOperationScanned(String host, String endpoint, String opType, String rootField) {
+        String selectSql = "SELECT unscanned_args, scanned_args FROM graphql_log "
+                + "WHERE host = ? AND endpoint = ? AND operation_type = ? AND root_field = ?";
+        try (PreparedStatement sel = connection.prepareStatement(selectSql)) {
+            sel.setString(1, host);
+            sel.setString(2, endpoint);
+            sel.setString(3, opType);
+            sel.setString(4, rootField);
+            ResultSet rs = sel.executeQuery();
+            if (!rs.next()) {
+                return false; // operation chưa từng thấy qua Proxy/Repeater -> không tạo mới.
+            }
+            Set<String> unscanned = stringToSet(rs.getString("unscanned_args"));
+            Set<String> scanned = stringToSet(rs.getString("scanned_args"));
+            if (unscanned.isEmpty()) {
+                return false; // đã scan hết.
+            }
+            scanned.addAll(unscanned);
+            String upd = "UPDATE graphql_log SET unscanned_args = '', scanned_args = ?, is_scanned = 1, "
+                    + "last_seen = CURRENT_TIMESTAMP "
+                    + "WHERE host = ? AND endpoint = ? AND operation_type = ? AND root_field = ?";
+            try (PreparedStatement u = connection.prepareStatement(upd)) {
+                u.setString(1, setToString(scanned));
+                u.setString(2, host);
+                u.setString(3, endpoint);
+                u.setString(4, opType);
+                u.setString(5, rootField);
+                u.executeUpdate();
+                return true;
+            }
+        } catch (SQLException e) {
+            api.logging().logToError("Error during markOperationScanned: " + e.getMessage(), e);
+        }
+        return false;
+    }
+
+    /**
+     * Đánh dấu đã scan theo id (dùng cho menu "Mark as scanned" thủ công): gom unscanned sang
+     * scanned và bật is_scanned=1.
+     */
+    public synchronized void markScannedById(int id) {
+        String sel = "SELECT unscanned_args, scanned_args FROM graphql_log WHERE id = ?";
+        try (PreparedStatement s = connection.prepareStatement(sel)) {
+            s.setInt(1, id);
+            ResultSet rs = s.executeQuery();
+            if (!rs.next()) {
+                return;
+            }
+            Set<String> unscanned = stringToSet(rs.getString("unscanned_args"));
+            Set<String> scanned = stringToSet(rs.getString("scanned_args"));
+            scanned.addAll(unscanned);
+            String upd = "UPDATE graphql_log SET unscanned_args = '', scanned_args = ?, is_scanned = 1, "
+                    + "is_rejected = 0, is_bypassed = 0, last_seen = CURRENT_TIMESTAMP WHERE id = ?";
+            try (PreparedStatement u = connection.prepareStatement(upd)) {
+                u.setString(1, setToString(scanned));
+                u.setInt(2, id);
+                u.executeUpdate();
+            }
+        } catch (SQLException e) {
+            api.logging().logToError("Error during markScannedById: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Auto-bypass cho root field không có argument (không tồn tại injection point qua argument).
      * Chỉ bypass khi chưa scanned/rejected và không còn argument chưa-scan.
      */
