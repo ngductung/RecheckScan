@@ -2,6 +2,12 @@
 
 ## [2.1-GRAPHQL] - 2026-08-28
 
+### Optimized (cập nhật 5 - RAM)
+- ✅ **Xóa request cache khi operation đã xử lý**: khi một operation được đánh dấu Scanned (auto từ
+  Scanner hoặc thủ công) / Rejected / Bypassed, entry request tương ứng bị xóa khỏi cache. Nhờ đó
+  cache chỉ giữ request của các operation **còn chưa scan** → RAM tối thiểu. (Cache vốn đã theo định
+  danh operation, không phải mỗi request một entry.)
+
 ### Optimized (cập nhật 4)
 - ✅ **Chuẩn hóa endpoint**: `/graphql` và `/graphql/` được coi là một (bỏ dấu `/` cuối) để không
   tạo hai dòng trùng cho cùng một endpoint.

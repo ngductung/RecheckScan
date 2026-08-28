@@ -194,6 +194,8 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
                     // Scanner biến đổi giá trị nên khớp từng argument không đáng tin -> đánh dấu cả operation.
                     if (databaseManager.markOperationScanned(host, endpoint, op.operationType(), op.rootField())) {
                         updated = true;
+                        // Đã scan xong -> xóa request khỏi cache để nhẹ RAM.
+                        requestCache.remove(cacheKey(host, endpoint, op.operationType(), op.rootField()));
                         api.logging().logToOutput("[RecheckScan-GraphQL] Marked scanned: "
                                 + op.operationType() + " " + op.rootField() + " @ " + host + endpoint);
                     }
@@ -511,6 +513,12 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
                         return;
                     }
                     if (Boolean.TRUE.equals(aValue)) {
+                        // Đã xử lý (rejected/bypassed) -> xóa request khỏi cache cho nhẹ RAM.
+                        requestCache.remove(cacheKey(
+                                (String) getValueAt(row, COL_HOST),
+                                (String) getValueAt(row, COL_ENDPOINT),
+                                (String) getValueAt(row, COL_OP_TYPE),
+                                (String) getValueAt(row, COL_FIELD)));
                         // Chỉ một trong (rejected, bypass) được bật tại một thời điểm.
                         for (int i = COL_REJECTED; i <= COL_BYPASS; i++) {
                             boolean checked = (i == col);
@@ -766,6 +774,12 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
                 if (id != null) {
                     ids.add(id);
                 }
+                // Đã đánh dấu scan -> xóa request khỏi cache.
+                requestCache.remove(cacheKey(
+                        (String) tableModel.getValueAt(m, COL_HOST),
+                        (String) tableModel.getValueAt(m, COL_ENDPOINT),
+                        (String) tableModel.getValueAt(m, COL_OP_TYPE),
+                        (String) tableModel.getValueAt(m, COL_FIELD)));
             }
             new Thread(() -> {
                 for (Integer id : ids) {
