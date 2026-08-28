@@ -32,17 +32,16 @@ jobs:
       - name: Build with Maven
         run: mvn -B package --file pom.xml
 
-      # Tìm file .jar đầu ra
-      - name: Locate JAR file
-        id: locate_jar
-        run: |
-          JAR_PATH=$(find target -name "burp-recheck-scan*.jar" | head -n 1)
-          echo "jar_file=$JAR_PATH" >> "$GITHUB_OUTPUT"
+      # Liệt kê các file .jar đầu ra (bản REST và bản GraphQL)
+      - name: List built JARs
+        run: find target -maxdepth 1 -name "burp-recheck-scan*.jar" -not -name "original-*"
 
-      - name: Create Release and Upload JAR
+      - name: Create Release and Upload JARs
         if: github.event_name == 'workflow_dispatch' && inputs.create_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: manual-release-${{ github.run_number }}
           name: Manual Release ${{ github.run_number }}
-          files: ${{ steps.locate_jar.outputs.jar_file }}
+          files: |
+            target/burp-recheck-scan-*.jar
+            !target/original-*.jar

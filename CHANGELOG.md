@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.1-GRAPHQL] - 2026-08-28
+
+### Added
+- ✅ **Recheck Scan GraphQL** – phiên bản dành riêng cho API GraphQL, đóng gói thành một jar/extension độc lập.
+- ✅ Định danh theo `(host, endpoint, operation_type, root_field)` thay cho `(method, host, path)` của bản REST.
+- ✅ Theo dõi trạng thái scan ở mức **argument của từng root field** (bao gồm cả argument lồng nhau và argument trong fragment).
+- ✅ GraphQL parser thuần Java (không phụ thuộc thư viện parser ngoài), khoan dung với query bị Scanner biến đổi.
+- ✅ Nhận diện request GraphQL qua JSON body (kể cả **batched array**), `application/graphql`, và `GET ?query=`.
+- ✅ Auto-bypass cho root field không có argument; đánh dấu Scanned/Rejected/Bypass; highlight & note trong Proxy history.
+- ✅ Build tạo đồng thời hai jar (REST + GraphQL) qua hai execution của maven-shade-plugin.
+
+### Technical
+- Thêm phụ thuộc Gson để bóc tách body GraphQL.
+- Tái sử dụng mô hình dữ liệu/luồng xử lý của bản REST, ánh xạ sang ngữ nghĩa GraphQL.
+
 ## [2.0-SQLITE] - 2025-05-16
 
 ### Added
