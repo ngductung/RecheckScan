@@ -2,6 +2,13 @@
 
 ## [2.1-GRAPHQL] - 2026-08-28
 
+### Added (cập nhật)
+- ✅ **Flatten `variables`**: đọc JSON `variables` và trải các key của input object thành pseudo-argument
+  (vd `input` → `input.expressionOutput`, `input.filters[].field`, `input.groupBys[]`). Nhờ đó các
+  injection point nằm sâu trong input object (pattern `input: XxxInput!` rất phổ biến) không bị bỏ sót.
+  Mảng dùng ký hiệu `[]` để gộp index; có giới hạn độ sâu/kích thước chống payload bất thường.
+- ✅ Parser ghi nhận ánh xạ argument → biến (`input: $input`) để flatten chính xác theo tên argument.
+
 ### Added
 - ✅ **Recheck Scan GraphQL** – phiên bản dành riêng cho API GraphQL, đóng gói thành một jar/extension độc lập.
 - ✅ Định danh theo `(host, endpoint, operation_type, root_field)` thay cho `(method, host, path)` của bản REST.

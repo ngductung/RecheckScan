@@ -36,8 +36,10 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -141,16 +143,20 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
             return;
         }
 
-        // Bóc tách toàn bộ query GraphQL trong request (hỗ trợ cả batched array).
-        List<String> queries = extractQueries(request);
-        if (queries.isEmpty()) {
+        // Bóc tách toàn bộ query GraphQL + variables trong request (hỗ trợ cả batched array).
+        List<QueryUnit> units = extractUnits(request);
+        if (units.isEmpty()) {
             return;
         }
 
-        // Parse thành danh sách operation (root field + argument).
+        // Parse thành danh sách operation; đồng thời "flatten" variables thành pseudo-argument
+        // (vd input -> input.expressionOutput, input.filters[].field) để bắt đúng injection point.
         List<GraphQLOperation> operations = new ArrayList<>();
-        for (String query : queries) {
-            operations.addAll(GraphQLParser.parse(query));
+        for (QueryUnit unit : units) {
+            for (GraphQLOperation op : GraphQLParser.parse(unit.query)) {
+                Set<String> effectiveArgs = flattenArgs(op, unit.variables);
+                operations.add(new GraphQLOperation(op.operationType(), op.operationName(), op.rootField(), effectiveArgs));
+            }
         }
         if (operations.isEmpty()) {
             return;
@@ -243,28 +249,40 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         }
     }
 
+    /** Một đơn vị yêu cầu GraphQL: chuỗi query kèm object variables (có thể null). */
+    private static final class QueryUnit {
+        final String query;
+        final JsonObject variables;
+
+        QueryUnit(String query, JsonObject variables) {
+            this.query = query;
+            this.variables = variables;
+        }
+    }
+
     /**
-     * Bóc tách toàn bộ chuỗi query GraphQL từ một request. Hỗ trợ:
+     * Bóc tách toàn bộ query GraphQL + variables từ một request. Hỗ trợ:
      * <ul>
      *     <li>POST JSON: {@code {"query": "...", "variables": {...}}} hoặc mảng batched.</li>
-     *     <li>POST application/graphql: toàn bộ body là query.</li>
-     *     <li>GET: tham số URL {@code ?query=...}.</li>
+     *     <li>POST application/graphql: toàn bộ body là query (không có variables).</li>
+     *     <li>GET: tham số URL {@code ?query=...&variables=...}.</li>
      * </ul>
      */
-    private List<String> extractQueries(HttpRequest request) {
-        List<String> queries = new ArrayList<>();
+    private List<QueryUnit> extractUnits(HttpRequest request) {
+        List<QueryUnit> units = new ArrayList<>();
         String method = request.method();
 
         if ("GET".equalsIgnoreCase(method)) {
             String q = request.parameterValue("query", HttpParameterType.URL);
             if (q != null && !q.isBlank()) {
-                queries.add(q);
+                JsonObject vars = tryParseVariables(request.parameterValue("variables", HttpParameterType.URL));
+                units.add(new QueryUnit(q, vars));
             }
-            return queries;
+            return units;
         }
 
         if (request.body().length() == 0) {
-            return queries;
+            return units;
         }
 
         String body = request.bodyToString();
@@ -275,23 +293,23 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
                 JsonElement root = JsonParser.parseString(body);
                 if (root.isJsonArray()) {
                     for (JsonElement element : root.getAsJsonArray()) {
-                        addQueryFromJson(element, queries);
+                        addUnitFromJson(element, units);
                     }
                 } else if (root.isJsonObject()) {
-                    addQueryFromJson(root, queries);
+                    addUnitFromJson(root, units);
                 }
             } catch (Exception ignore) {
                 // Body không phải JSON hợp lệ -> bỏ qua.
             }
-            return queries;
+            return units;
         }
 
-        // application/graphql hoặc body thô: coi cả body là một query.
-        queries.add(body);
-        return queries;
+        // application/graphql hoặc body thô: coi cả body là một query, không có variables.
+        units.add(new QueryUnit(body, null));
+        return units;
     }
 
-    private void addQueryFromJson(JsonElement element, List<String> queries) {
+    private void addUnitFromJson(JsonElement element, List<QueryUnit> units) {
         if (element == null || !element.isJsonObject()) {
             return;
         }
@@ -299,8 +317,80 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         if (obj.has("query") && obj.get("query").isJsonPrimitive()) {
             String q = obj.get("query").getAsString();
             if (q != null && !q.isBlank()) {
-                queries.add(q);
+                JsonObject vars = (obj.has("variables") && obj.get("variables").isJsonObject())
+                        ? obj.getAsJsonObject("variables") : null;
+                units.add(new QueryUnit(q, vars));
             }
+        }
+    }
+
+    private JsonObject tryParseVariables(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            JsonElement el = JsonParser.parseString(raw);
+            return el.isJsonObject() ? el.getAsJsonObject() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Tính tập argument "hiệu dụng" của một operation: với argument nào trỏ tới một biến là
+     * object/array trong {@code variables}, thay tên argument thô bằng các đường dẫn lá đã flatten
+     * (vd {@code input} -> {@code input.expressionOutput}, {@code input.filters[].field}). Nhờ đó
+     * các injection point nằm sâu trong input object không bị bỏ sót.
+     */
+    private Set<String> flattenArgs(GraphQLOperation op, JsonObject variables) {
+        Set<String> result = new TreeSet<>();
+        Map<String, String> argVars = op.argumentVariables();
+        for (String arg : op.argumentNames()) {
+            String varName = argVars.get(arg);
+            if (varName != null && variables != null && variables.has(varName)) {
+                JsonElement value = variables.get(varName);
+                if (value != null && (value.isJsonObject() || value.isJsonArray())) {
+                    Set<String> leaves = new TreeSet<>();
+                    flattenJson(value, arg, leaves, 0);
+                    if (!leaves.isEmpty()) {
+                        result.addAll(leaves);
+                        continue; // thay argument thô bằng các leaf cụ thể.
+                    }
+                }
+            }
+            result.add(arg); // biến scalar, giá trị inline, hoặc không có variables -> giữ tên arg.
+        }
+        return result;
+    }
+
+    /** Flatten một JsonElement thành các đường dẫn lá; mảng dùng ký hiệu {@code []} để gộp index. */
+    private void flattenJson(JsonElement el, String prefix, Set<String> out, int depth) {
+        if (out.size() >= 500 || depth > 12) {
+            out.add(prefix);
+            return;
+        }
+        if (el == null || el.isJsonNull()) {
+            out.add(prefix);
+        } else if (el.isJsonObject()) {
+            JsonObject obj = el.getAsJsonObject();
+            if (obj.size() == 0) {
+                out.add(prefix);
+                return;
+            }
+            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+                flattenJson(entry.getValue(), prefix + "." + entry.getKey(), out, depth + 1);
+            }
+        } else if (el.isJsonArray()) {
+            JsonArray arr = el.getAsJsonArray();
+            if (arr.size() == 0) {
+                out.add(prefix + "[]");
+                return;
+            }
+            for (JsonElement child : arr) {
+                flattenJson(child, prefix + "[]", out, depth + 1);
+            }
+        } else {
+            out.add(prefix); // primitive leaf (string/number/bool)
         }
     }
 

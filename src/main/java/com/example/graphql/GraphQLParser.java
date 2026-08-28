@@ -61,9 +61,11 @@ public final class GraphQLParser {
             // Gom theo TÊN root field: nhiều alias của cùng một field (hoặc field lặp qua fragment)
             // sẽ được hợp nhất argument để không bỏ sót injection point nào.
             Map<String, Set<String>> rootFieldArgs = new LinkedHashMap<>();
-            collectRootFieldArgs(operation.selectionSet, document.fragments, new HashSet<>(), rootFieldArgs);
+            Map<String, Map<String, String>> rootFieldVars = new LinkedHashMap<>();
+            collectRootFieldArgs(operation.selectionSet, document.fragments, new HashSet<>(), rootFieldArgs, rootFieldVars);
             for (Map.Entry<String, Set<String>> entry : rootFieldArgs.entrySet()) {
-                result.add(new GraphQLOperation(operation.type, operation.name, entry.getKey(), entry.getValue()));
+                result.add(new GraphQLOperation(operation.type, operation.name, entry.getKey(), entry.getValue(),
+                        rootFieldVars.getOrDefault(entry.getKey(), new LinkedHashMap<>())));
             }
         }
         return result;
@@ -195,6 +197,8 @@ public final class GraphQLParser {
     private static final class Field {
         final String name;
         final List<String> argumentNames = new ArrayList<>();
+        /** Ánh xạ tên argument -> tên biến GraphQL mà nó tham chiếu (vd input -> input trong `input: $input`). */
+        final Map<String, String> argumentVariables = new LinkedHashMap<>();
         SelectionSet selectionSet;
 
         Field(String name) {
@@ -397,9 +401,18 @@ public final class GraphQLParser {
                 if (isName(t)) {
                     // Chỉ là argument nếu ngay sau tên là dấu ':'.
                     if (pos + 1 < tokens.size() && ":".equals(tokens.get(pos + 1))) {
-                        field.argumentNames.add(next()); // tên argument.
+                        String argName = next(); // tên argument.
+                        field.argumentNames.add(argName);
                         next(); // ăn ":".
-                        skipValue();
+                        if ("$".equals(peek())) {
+                            // Giá trị là một biến -> ghi lại ánh xạ argName -> varName để flatten sau này.
+                            next(); // ăn "$".
+                            if (isName(peek())) {
+                                field.argumentVariables.put(argName, next());
+                            }
+                        } else {
+                            skipValue();
+                        }
                     } else {
                         next();
                     }
@@ -462,25 +475,59 @@ public final class GraphQLParser {
      * Nhiều alias trỏ tới cùng một field sẽ được hợp nhất argument.
      */
     private static void collectRootFieldArgs(SelectionSet ss, Map<String, SelectionSet> fragments,
-                                             Set<String> visitedSpreads, Map<String, Set<String>> out) {
+                                             Set<String> visitedSpreads, Map<String, Set<String>> out,
+                                             Map<String, Map<String, String>> outVars) {
         if (ss == null) {
             return;
         }
         for (Field f : ss.fields) {
             out.computeIfAbsent(f.name, k -> new HashSet<>())
                     .addAll(collectArgs(f, fragments, new HashSet<>()));
+            outVars.computeIfAbsent(f.name, k -> new LinkedHashMap<>())
+                    .putAll(collectArgVariables(f, fragments, new HashSet<>()));
         }
         for (SelectionSet inline : ss.inlineFragments) {
-            collectRootFieldArgs(inline, fragments, visitedSpreads, out);
+            collectRootFieldArgs(inline, fragments, visitedSpreads, out, outVars);
         }
         for (String spread : ss.fragmentSpreads) {
             if (visitedSpreads.add(spread)) {
                 SelectionSet target = fragments.get(spread);
                 if (target != null) {
-                    collectRootFieldArgs(target, fragments, visitedSpreads, out);
+                    collectRootFieldArgs(target, fragments, visitedSpreads, out, outVars);
                 }
             }
         }
+    }
+
+    /** Gom ánh xạ argument -> biến trong toàn bộ cây con của một field (kể cả fragment). */
+    private static Map<String, String> collectArgVariables(Field field, Map<String, SelectionSet> fragments, Set<String> visitedFragments) {
+        Map<String, String> result = new LinkedHashMap<>(field.argumentVariables);
+        if (field.selectionSet != null) {
+            result.putAll(collectArgVariablesFromSet(field.selectionSet, fragments, visitedFragments));
+        }
+        return result;
+    }
+
+    private static Map<String, String> collectArgVariablesFromSet(SelectionSet ss, Map<String, SelectionSet> fragments, Set<String> visitedFragments) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (ss == null) {
+            return result;
+        }
+        for (Field f : ss.fields) {
+            result.putAll(collectArgVariables(f, fragments, visitedFragments));
+        }
+        for (SelectionSet inline : ss.inlineFragments) {
+            result.putAll(collectArgVariablesFromSet(inline, fragments, visitedFragments));
+        }
+        for (String spread : ss.fragmentSpreads) {
+            if (visitedFragments.add(spread)) {
+                SelectionSet target = fragments.get(spread);
+                if (target != null) {
+                    result.putAll(collectArgVariablesFromSet(target, fragments, visitedFragments));
+                }
+            }
+        }
+        return result;
     }
 
     /**

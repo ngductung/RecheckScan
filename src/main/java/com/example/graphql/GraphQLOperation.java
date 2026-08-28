@@ -1,5 +1,7 @@
 package com.example.graphql;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -33,12 +35,29 @@ public class GraphQLOperation {
     /** Tập hợp tên tất cả argument (kể cả lồng nhau) thuộc root field – các injection point. */
     private final Set<String> argumentNames;
 
+    /**
+     * Ánh xạ tên argument -> tên biến GraphQL mà nó tham chiếu (vd {@code input -> input} với
+     * {@code reportView(input: $input)}). Dùng để "flatten" cấu trúc {@code variables} thành các
+     * pseudo-argument như {@code input.expressionOutput}.
+     */
+    private final Map<String, String> argumentVariables;
+
     public GraphQLOperation(String operationType, String operationName, String rootField, Set<String> argumentNames) {
+        this(operationType, operationName, rootField, argumentNames, new LinkedHashMap<>());
+    }
+
+    public GraphQLOperation(String operationType, String operationName, String rootField,
+                            Set<String> argumentNames, Map<String, String> argumentVariables) {
         this.operationType = operationType;
         this.operationName = operationName == null ? "" : operationName;
         this.rootField = rootField;
         // Sắp xếp sẵn để dữ liệu ổn định khi so sánh / lưu trữ.
         this.argumentNames = new TreeSet<>(argumentNames == null ? Set.of() : argumentNames);
+        this.argumentVariables = argumentVariables == null ? new LinkedHashMap<>() : new LinkedHashMap<>(argumentVariables);
+    }
+
+    public Map<String, String> argumentVariables() {
+        return argumentVariables;
     }
 
     public String operationType() {

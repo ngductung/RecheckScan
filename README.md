@@ -162,6 +162,10 @@ Với GraphQL, mỗi **root field** của mỗi **operation** được coi là m
 2. **Bóc tách** bằng một GraphQL parser thuần Java (không phụ thuộc thư viện parser ngoài, khoan
    dung với query bị Scanner biến đổi): lấy loại operation, tên operation, danh sách root field và
    **toàn bộ tên argument** trong cây con của từng root field (bao gồm cả argument trong fragment).
+   - **Flatten `variables`**: nếu argument trỏ tới một biến là object/array (vd `reportView(input: $input)`),
+     tool đọc JSON `variables` và trải thành các pseudo-argument cụ thể như `input.expressionOutput`,
+     `input.filters[].field`, `input.groupBys[]` — thay vì chỉ ghi nhận tên thô `input`. Nhờ vậy các
+     injection point nằm sâu trong input object không bị bỏ sót (pattern `input: XxxInput!` rất phổ biến).
 3. **Theo dõi trạng thái** giống hệt bản REST:
    - Request từ **Scanner** → các argument được kiểm thử chuyển sang *scanned*; hết argument
      chưa-scan thì đánh dấu **Scanned**.
