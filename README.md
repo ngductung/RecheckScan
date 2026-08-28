@@ -133,6 +133,105 @@ CREATE TABLE api_log (
 );
 ```
 
+## 🕸️ Phiên bản GraphQL (Recheck Scan GraphQL)
+
+Bản REST định danh một "API" bằng `(method, host, path)`. Điều này **không phù hợp với GraphQL**
+vì mọi request thường đi tới cùng một endpoint (ví dụ `/graphql`) và "bề mặt tấn công" thật sự
+nằm trong nội dung của query chứ không phải ở URL. Vì vậy dự án bổ sung một extension riêng dành
+riêng cho GraphQL.
+
+### Tư duy định danh
+
+Với GraphQL, mỗi **root field** của mỗi **operation** được coi là một "API" độc lập để theo dõi:
+
+| REST | GraphQL |
+|------|---------|
+| `method` (GET/POST) | `operation_type` (query/mutation/subscription) |
+| `path` (`/v1/users`) | `root_field` (`user`, `createUser`) |
+| `host` | `host` + `endpoint` |
+| Query/body params | **Tên các argument** của root field (kể cả argument lồng nhau) |
+
+→ Ràng buộc duy nhất: **`(host, endpoint, operation_type, root_field)`**.
+
+### Cách hoạt động
+
+1. **Nhận diện request GraphQL** từ:
+   - `POST` body JSON: `{"query": "...", "variables": {...}}` — hỗ trợ cả **batched array**.
+   - `POST` `application/graphql`: toàn bộ body là query.
+   - `GET` với tham số `?query=...`.
+2. **Bóc tách** bằng một GraphQL parser thuần Java (không phụ thuộc thư viện parser ngoài, khoan
+   dung với query bị Scanner biến đổi): lấy loại operation, tên operation, danh sách root field và
+   **toàn bộ tên argument** trong cây con của từng root field (bao gồm cả argument trong fragment).
+   - **Flatten `variables`**: nếu argument trỏ tới một biến là object/array (vd `reportView(input: $input)`),
+     tool đọc JSON `variables` và trải thành các pseudo-argument cụ thể như `input.expressionOutput`,
+     `input.filters[].field`, `input.groupBys[]` — thay vì chỉ ghi nhận tên thô `input`. Nhờ vậy các
+     injection point nằm sâu trong input object không bị bỏ sót (pattern `input: XxxInput!` rất phổ biến).
+3. **Theo dõi trạng thái** giống hệt bản REST:
+   - Request từ **Scanner** → các argument được kiểm thử chuyển sang *scanned*; hết argument
+     chưa-scan thì đánh dấu **Scanned**.
+   - Request từ **Proxy/Repeater** → ghi nhận argument mới (chưa-scan); root field **không có
+     argument** thì **auto-bypass**.
+   - Người dùng có thể tự đánh dấu **Rejected** / **Bypass** trên bảng.
+4. Hiển thị trên tab riêng **"Recheck Scan GraphQL"** với hai bảng **Unscanned** / **Logs** và các
+   thống kê Total / Scanned / Rejected / Bypass / Unverified.
+
+### Cấu trúc Database (GraphQL)
+
+```sql
+CREATE TABLE graphql_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    endpoint TEXT NOT NULL,          -- Đường dẫn endpoint (vd: /graphql)
+    operation_type TEXT NOT NULL,    -- query / mutation / subscription
+    operation_name TEXT,             -- Tên operation (để hiển thị)
+    root_field TEXT NOT NULL,        -- Tên root field = "API" GraphQL
+    unscanned_args TEXT,             -- Argument chưa scan
+    scanned_args TEXT,               -- Argument đã scan
+    is_scanned BOOLEAN DEFAULT 0,
+    is_rejected BOOLEAN DEFAULT 0,
+    is_bypassed BOOLEAN DEFAULT 0,
+    is_from_repeater BOOLEAN DEFAULT 0,
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(host, endpoint, operation_type, root_field)
+);
+```
+
+### Build & cài đặt
+
+`mvn clean package` tạo ra **hai** file jar độc lập trong thư mục `target/`:
+
+| File | Extension | Main class |
+|------|-----------|------------|
+| `burp-recheck-scan-2.0-SQLITE.jar` | Recheck Scan API (REST) | `com.example.RecheckScanApiExtension` |
+| `burp-recheck-scan-graphql-2.0-SQLITE.jar` | Recheck Scan GraphQL | `com.example.graphql.GraphQLRecheckScanExtension` |
+
+Nạp file `...-graphql-...jar` vào Burp (`Extensions → Add → Java`) để dùng bản GraphQL. Hai
+extension độc lập, có thể chạy đồng thời và dùng file DB riêng (`scan_graphql.db`).
+
+### Troubleshooting bản GraphQL
+
+**Nạp jar rồi mà không thấy tab GraphQL / vẫn ra giao diện REST:**
+- Mỗi jar phải chỉ chứa DUY NHẤT một class `BurpExtension`. Nếu jar chứa cả class REST lẫn GraphQL,
+  Burp có thể nạp nhầm bản REST. Dùng đúng jar `...-graphql-...jar` (hoặc `RecheckScan-GraphQL.jar`)
+  đã loại class REST. Kiểm tra `Extensions → Installed`: tên phải là **"Recheck Scan GraphQL"**.
+- Xem `Extensions → Installed → (chọn ext) → Output/Errors` để thấy log khởi tạo và lỗi (nếu có).
+
+**Thấy tab nhưng không ghi nhận request GraphQL nào:**
+- **Phải thêm target vào Scope** (`Target → Scope`). Với traffic từ Proxy/Repeater, extension chỉ xử lý
+  request **in-scope** (giống bản REST).
+- Chỉ những request có chứa GraphQL query mới được nhận (POST body có `query`, `application/graphql`,
+  hoặc `GET ?query=`). Request phải có **response** đi kèm mới được xử lý.
+- Nếu đặt "GraphQL Endpoint Paths" thì path phải khớp; để trống để tự động nhận diện theo nội dung.
+
+### Settings bản GraphQL
+
+- **GraphQL Endpoint Paths** *(tùy chọn)*: danh sách path (cách nhau bởi dấu phẩy/xuống dòng, vd
+  `/graphql, /api/graphql`). Để trống → tự động nhận diện mọi request có chứa query GraphQL.
+- **Exclude Status Codes**, **Highlight**, **Add Note**, **Auto-bypass fields without arguments**:
+  tương tự bản REST.
+
+---
+
 ## ⚙️ Cấu hình nâng cao
 
 ### File cấu hình
@@ -166,9 +265,16 @@ true
 
 ```
 src/main/java/com/example/
-├── DatabaseManager.java          # Core database operations
-├── RecheckScanApiExtension.java   # Main extension class
-└── SettingsPanel.java            # UI settings panel
+├── DatabaseManager.java              # Core database operations (REST)
+├── RecheckScanApiExtension.java       # Main extension class (REST)
+├── PathParameterRule.java            # Dynamic path-segment normalization rule
+├── SettingsPanel.java                # UI settings panel (REST)
+└── graphql/                          # Phiên bản GraphQL
+    ├── GraphQLRecheckScanExtension.java  # Main extension class (GraphQL)
+    ├── GraphQLParser.java                # GraphQL query parser thuần Java
+    ├── GraphQLOperation.java             # Model: root field + argument
+    ├── GraphQLDatabaseManager.java       # Database operations (GraphQL)
+    └── GraphQLSettingsPanel.java         # UI settings panel (GraphQL)
 ```
 
 ### Build và Test

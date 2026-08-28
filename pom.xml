@@ -39,6 +39,13 @@
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.50.1.0</version>
         </dependency>
+
+        <!-- Gson - Parse GraphQL request bodies (query/variables/operationName, batched arrays) -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.11.0</version>
+        </dependency>
     </dependencies>
 
     <!-- Build configuration -->
@@ -50,7 +57,9 @@
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.5.1</version>
                 <executions>
+                    <!-- JAR 1: bản REST (giữ nguyên tên & main class như cũ) -->
                     <execution>
+                        <id>rest-jar</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
@@ -62,12 +71,68 @@
                                     <exclude>net.portswigger.burp.extensions:montoya-api</exclude>
                                 </excludes>
                             </artifactSet>
+                            <!--
+                                QUAN TRỌNG: loại các class của bản GraphQL khỏi jar REST để jar này chỉ
+                                chứa DUY NHẤT một class implement BurpExtension (com.example.RecheckScanApiExtension).
+                                Nếu để cả hai, Burp có thể nạp nhầm extension.
+                            -->
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>com/example/graphql/**</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <transformers>
                                 <!-- Set main class for the JAR manifest -->
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.example.RecheckScanApiExtension</mainClass>
                                 </transformer>
                                 <!-- Handle service files properly -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                        </configuration>
+                    </execution>
+
+                    <!-- JAR 2: bản GraphQL (main class riêng, file jar riêng) -->
+                    <execution>
+                        <id>graphql-jar</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>burp-recheck-scan-graphql-${project.version}</finalName>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>graphql</shadedClassifierName>
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>net.portswigger.burp.extensions:montoya-api</exclude>
+                                </excludes>
+                            </artifactSet>
+                            <!--
+                                Loại các class extension REST khỏi jar GraphQL để jar này chỉ chứa DUY NHẤT
+                                một class implement BurpExtension (com.example.graphql.GraphQLRecheckScanExtension).
+                                Đây là fix cho lỗi Burp nạp nhầm bản REST khi jar chứa cả hai.
+                            -->
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>com/example/RecheckScanApiExtension.class</exclude>
+                                        <exclude>com/example/RecheckScanApiExtension$*.class</exclude>
+                                        <exclude>com/example/DatabaseManager.class</exclude>
+                                        <exclude>com/example/DatabaseManager$*.class</exclude>
+                                        <exclude>com/example/PathParameterRule.class</exclude>
+                                        <exclude>com/example/SettingsPanel.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.example.graphql.GraphQLRecheckScanExtension</mainClass>
+                                </transformer>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
                         </configuration>

@@ -1,5 +1,60 @@
 # Changelog
 
+## [2.1-GRAPHQL] - 2026-08-28
+
+### Optimized (cập nhật 5 - RAM)
+- ✅ **Xóa request cache khi operation đã xử lý**: khi một operation được đánh dấu Scanned (auto từ
+  Scanner hoặc thủ công) / Rejected / Bypassed, entry request tương ứng bị xóa khỏi cache. Nhờ đó
+  cache chỉ giữ request của các operation **còn chưa scan** → RAM tối thiểu. (Cache vốn đã theo định
+  danh operation, không phải mỗi request một entry.)
+
+### Optimized (cập nhật 4)
+- ✅ **Chuẩn hóa endpoint**: `/graphql` và `/graphql/` được coi là một (bỏ dấu `/` cuối) để không
+  tạo hai dòng trùng cho cùng một endpoint.
+- ✅ **Thread-safe hơn**: `loadData` / `getStatus` / `getAllArgsById` được đồng bộ (synchronized)
+  để tránh truy cập Connection SQLite đồng thời với các luồng ghi.
+- ✅ **Đã test end-to-end**: bộ test chạy trực tiếp `GraphQLDatabaseManager` (25/25 PASS) kiểm chứng
+  insert/idempotent, auto-mark theo operation, phát hiện param mới sau khi đã scan, processScannedArgs,
+  autoBypass, không tạo dòng mới từ Scanner, repeater status, mark thủ công.
+
+### Fixed (cập nhật 3)
+- ✅ **Auto-mark Scanned tin cậy hơn**: khi có request từ Scanner chạm tới một operation đã biết,
+  tool đánh dấu **cả operation** là Scanned thay vì đòi khớp từng argument (Scanner biến đổi giá trị
+  nên khớp arg hay trượt). Không tạo dòng mới từ request Scanner.
+- ✅ Thêm menu **Mark as scanned** thủ công (chuột phải) khi cần tự đánh dấu.
+- ✅ Thêm log `[RecheckScan-GraphQL]` (Extensions → Output) để xác nhận handler có nhận traffic
+  Scanner và operation nào vừa được đánh dấu.
+
+### Added (cập nhật 2)
+- ✅ **Context menu Send**: chuột phải trên bảng → **Send to Repeater / Intruder / Organizer /
+  Active scan (Scanner)**. Tool cache request thật gần nhất theo từng đơn vị
+  `(host|endpoint|opType|rootField)` (trong RAM session) để tìm lại đúng request mà scan/repeat,
+  khỏi phải mò trong Proxy history. Active scan dùng `LEGACY_ACTIVE_AUDIT_CHECKS`.
+
+### Fixed
+- ✅ Mỗi jar chỉ chứa DUY NHẤT một class `BurpExtension` (shade `<filters>` + file
+  `META-INF/services/burp.api.montoya.BurpExtension`) để Burp không nạp nhầm bản REST.
+
+### Added (cập nhật)
+- ✅ **Flatten `variables`**: đọc JSON `variables` và trải các key của input object thành pseudo-argument
+  (vd `input` → `input.expressionOutput`, `input.filters[].field`, `input.groupBys[]`). Nhờ đó các
+  injection point nằm sâu trong input object (pattern `input: XxxInput!` rất phổ biến) không bị bỏ sót.
+  Mảng dùng ký hiệu `[]` để gộp index; có giới hạn độ sâu/kích thước chống payload bất thường.
+- ✅ Parser ghi nhận ánh xạ argument → biến (`input: $input`) để flatten chính xác theo tên argument.
+
+### Added
+- ✅ **Recheck Scan GraphQL** – phiên bản dành riêng cho API GraphQL, đóng gói thành một jar/extension độc lập.
+- ✅ Định danh theo `(host, endpoint, operation_type, root_field)` thay cho `(method, host, path)` của bản REST.
+- ✅ Theo dõi trạng thái scan ở mức **argument của từng root field** (bao gồm cả argument lồng nhau và argument trong fragment).
+- ✅ GraphQL parser thuần Java (không phụ thuộc thư viện parser ngoài), khoan dung với query bị Scanner biến đổi.
+- ✅ Nhận diện request GraphQL qua JSON body (kể cả **batched array**), `application/graphql`, và `GET ?query=`.
+- ✅ Auto-bypass cho root field không có argument; đánh dấu Scanned/Rejected/Bypass; highlight & note trong Proxy history.
+- ✅ Build tạo đồng thời hai jar (REST + GraphQL) qua hai execution của maven-shade-plugin.
+
+### Technical
+- Thêm phụ thuộc Gson để bóc tách body GraphQL.
+- Tái sử dụng mô hình dữ liệu/luồng xử lý của bản REST, ánh xạ sang ngữ nghĩa GraphQL.
+
 ## [2.0-SQLITE] - 2025-05-16
 
 ### Added
