@@ -41,7 +41,8 @@ public class SettingsPanel {
             JLabel     bypassLbl,
             JLabel     unverifiedLbl,
             JTextField excludeStatusCodesField,
-            JTextArea  pathParameterRulesArea) {
+            JTextArea  pathParameterRulesArea,
+            JTextArea  ignoredParameterRulesArea) {
 
         /* ========= PANEL GỐC (ROOT) ========= */
         JPanel settingsPanel = new JPanel();
@@ -63,17 +64,22 @@ public class SettingsPanel {
         JLabel excludeExtensionLabel = new JLabel("Exclude Extensions (comma separated): ");
         JLabel excludeStatusCodeLabel = new JLabel("Exclude Status Codes (comma separated): ");
         JLabel pathParameterRulesLabel = new JLabel("URL Path Parameter Rules: ");
+        JLabel ignoredParameterRulesLabel = new JLabel("Ignored Parameter Rules: ");
         int projectSettingsLabelWidth = Math.max(
-                Math.max(outputPathLabel.getPreferredSize().width, excludeExtensionLabel.getPreferredSize().width),
-                Math.max(excludeStatusCodeLabel.getPreferredSize().width, pathParameterRulesLabel.getPreferredSize().width)
+                Math.max(
+                        Math.max(outputPathLabel.getPreferredSize().width, excludeExtensionLabel.getPreferredSize().width),
+                        Math.max(excludeStatusCodeLabel.getPreferredSize().width, pathParameterRulesLabel.getPreferredSize().width)
+                ),
+                ignoredParameterRulesLabel.getPreferredSize().width
         );
-        for (JLabel label : new JLabel[]{outputPathLabel, excludeExtensionLabel, excludeStatusCodeLabel, pathParameterRulesLabel}) {
+        for (JLabel label : new JLabel[]{outputPathLabel, excludeExtensionLabel, excludeStatusCodeLabel, pathParameterRulesLabel, ignoredParameterRulesLabel}) {
             Dimension labelSize = new Dimension(projectSettingsLabelWidth, label.getPreferredSize().height);
             label.setPreferredSize(labelSize);
             label.setMinimumSize(labelSize);
             label.setHorizontalAlignment(SwingConstants.LEFT);
         }
         pathParameterRulesLabel.setVerticalAlignment(SwingConstants.TOP);
+        ignoredParameterRulesLabel.setVerticalAlignment(SwingConstants.TOP);
 
         // Panel cho đường dẫn output và nút Browse
         JPanel outputPathPanel = new JPanel(new BorderLayout(5, 0));
@@ -175,6 +181,28 @@ public class SettingsPanel {
         pathRuleResizeHandle.addMouseMotionListener(pathRuleResizeListener);
 
         projectSettingsPanel.add(pathParameterRulesPanel);
+        projectSettingsPanel.add(Box.createRigidArea(new Dimension(0, 5)));
+
+        // Panel cho rule loại bỏ parameter không cần kiểm tra
+        JPanel ignoredParameterRulesPanel = new JPanel(new BorderLayout(5, 0));
+        ignoredParameterRulesPanel.add(ignoredParameterRulesLabel, BorderLayout.WEST);
+        ignoredParameterRulesArea.setRows(3);
+        ignoredParameterRulesArea.setToolTipText("One rule per line. Supports exact names, wildcards, and regex: rules.");
+        JScrollPane ignoredParamRuleScroll = new JScrollPane(ignoredParameterRulesArea);
+        int ignoredParamRuleInitialHeight = ignoredParamRuleScroll.getPreferredSize().height;
+        ignoredParamRuleScroll.setPreferredSize(new Dimension(1, ignoredParamRuleInitialHeight));
+        JLabel ignoredParamRuleHelpLabel = new JLabel("One rule per line. Examples: utm_*, _ga, timestamp, regex:^__.*$");
+        ignoredParamRuleHelpLabel.setFont(ignoredParamRuleHelpLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        ignoredParamRuleHelpLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+
+        JPanel ignoredParamRuleInputPanel = new JPanel(new BorderLayout(0, 3));
+        ignoredParamRuleInputPanel.add(ignoredParamRuleScroll, BorderLayout.CENTER);
+        ignoredParamRuleInputPanel.add(ignoredParamRuleHelpLabel, BorderLayout.SOUTH);
+        ignoredParameterRulesPanel.add(ignoredParamRuleInputPanel, BorderLayout.CENTER);
+        ignoredParameterRulesPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, ignoredParameterRulesPanel.getPreferredSize().height));
+        ignoredParameterRulesPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        projectSettingsPanel.add(ignoredParameterRulesPanel);
         projectSettingsPanel.add(Box.createRigidArea(new Dimension(0, 5)));
 
         centerPanel.add(projectSettingsPanel);

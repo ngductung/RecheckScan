@@ -52,10 +52,12 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     private String savedOutputPath;
     private String exclude_status_code;
     private String path_parameter_rules;
+    private String ignored_parameter_rules;
     private boolean highlightEnabled = false;
     private boolean noteEnabled = false;
     private boolean autoBypassNoParam = false;
     private List<PathParameterRule> compiledPathParameterRules = new ArrayList<>();
+    private List<Pattern> compiledIgnoredParameterRules = new ArrayList<>();
 
     /**
      * Model cho JTable, chứa dữ liệu API được hiển thị trên giao diện.
@@ -154,7 +156,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                     }
 
                     // Nhánh 2a: Tự động bypass cho API không có tham số.
-                    if (requestParams.isEmpty()) {
+                    if (requestParams.isEmpty() && autoBypassNoParam) {
                         new Thread(() -> {
                             boolean updated = databaseManager.autoBypassApi(method, host, path);
                             if (updated) {
@@ -246,7 +248,30 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             }
         }
 
-        return allParamNames;
+        return filterIgnoredParameters(allParamNames);
+    }
+
+    private Set<String> filterIgnoredParameters(Set<String> parameterNames) {
+        if (parameterNames == null || parameterNames.isEmpty() || compiledIgnoredParameterRules.isEmpty()) {
+            return parameterNames;
+        }
+
+        return parameterNames.stream()
+                .filter(paramName -> !isIgnoredParameter(paramName))
+                .collect(Collectors.toCollection(HashSet::new));
+    }
+
+    private boolean isIgnoredParameter(String parameterName) {
+        if (parameterName == null || compiledIgnoredParameterRules.isEmpty()) {
+            return false;
+        }
+
+        for (Pattern pattern : compiledIgnoredParameterRules) {
+            if (pattern.matcher(parameterName).matches()) {
+                return true;
+            }
+        }
+        return false;
     }
 
 
@@ -463,6 +488,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         JTextField outputPathField = new JTextField(savedOutputPath != null ? savedOutputPath : "");
         JTextField excludeStatusCodesField = new JTextField(exclude_status_code != null ? exclude_status_code : "404,405");
         JTextArea pathParameterRulesArea = new JTextArea(path_parameter_rules != null ? path_parameter_rules : "");
+        JTextArea ignoredParameterRulesArea = new JTextArea(ignored_parameter_rules != null ? ignored_parameter_rules : "");
         JButton browseButton = new JButton("Browse");
         browseButton.addActionListener(e -> {
             JFileChooser fileChooser = new JFileChooser();
@@ -492,7 +518,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             savedOutputPath = outputPathField.getText().trim();
             exclude_status_code = excludeStatusCodesField.getText().trim();
             path_parameter_rules = pathParameterRulesArea.getText().trim();
+            ignored_parameter_rules = ignoredParameterRulesArea.getText().trim();
             compiledPathParameterRules = compilePathParameterRules(path_parameter_rules);
+            compiledIgnoredParameterRules = compileIgnoredParameterRules(ignored_parameter_rules);
             autoBypassNoParam = autoBypassCheckBox.isSelected();
             saveSettings();
 
@@ -501,11 +529,14 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             databaseManager.initialize(savedOutputPath);
 
             // *** Áp dụng bypass cho dữ liệu cũ ***
-            if (!compiledPathParameterRules.isEmpty() || autoBypassNoParam) {
+            if (!compiledPathParameterRules.isEmpty() || !compiledIgnoredParameterRules.isEmpty() || autoBypassNoParam) {
                 // Chạy trong một luồng riêng để không làm treo giao diện
                 new Thread(() -> {
                     if (!compiledPathParameterRules.isEmpty()) {
                         databaseManager.normalizeStoredPaths(this::normalizePath);
+                    }
+                    if (!compiledIgnoredParameterRules.isEmpty()) {
+                        databaseManager.removeIgnoredParameters(this::isIgnoredParameter);
                     }
                     if (autoBypassNoParam) {
                         databaseManager.applyAutoBypassToOldRecords();
@@ -520,7 +551,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
 
             JOptionPane.showMessageDialog(null, "Settings applied and project reloaded from database.");
         });
-        tabs.addTab("Settings", SettingsPanel.create(extensionArea, outputPathField, browseButton, highlightCheckBox, noteCheckBox, autoBypassCheckBox, applyButton, totalLbl, scannedLbl, rejectedLbl, bypassLbl, unverifiedLbl, excludeStatusCodesField, pathParameterRulesArea));
+        tabs.addTab("Settings", SettingsPanel.create(extensionArea, outputPathField, browseButton, highlightCheckBox, noteCheckBox, autoBypassCheckBox, applyButton, totalLbl, scannedLbl, rejectedLbl, bypassLbl, unverifiedLbl, excludeStatusCodesField, pathParameterRulesArea, ignoredParameterRulesArea));
         
         // Đăng ký tab chính vào giao diện Burp.
         JPanel mainPanel = new JPanel(new BorderLayout());
@@ -721,7 +752,61 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             }
         };
     }
-    
+
+    private List<Pattern> compileIgnoredParameterRules(String rulesText) {
+        List<Pattern> rules = new ArrayList<>();
+        if (rulesText == null || rulesText.isBlank()) {
+            return rules;
+        }
+
+        for (String rawLine : rulesText.split("\\R")) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+
+            Pattern pattern = compileIgnoredParameterPattern(line);
+            if (pattern != null) {
+                rules.add(pattern);
+            }
+        }
+        return rules;
+    }
+
+    private Pattern compileIgnoredParameterPattern(String spec) {
+        String lowerSpec = spec.toLowerCase(Locale.ROOT);
+        if (lowerSpec.startsWith("regex:")) {
+            try {
+                return Pattern.compile(spec.substring("regex:".length()));
+            } catch (PatternSyntaxException e) {
+                api.logging().logToError("Invalid ignored parameter regex rule: " + spec + " - " + e.getMessage());
+                return null;
+            }
+        }
+
+        try {
+            return Pattern.compile(wildcardToRegex(spec));
+        } catch (PatternSyntaxException e) {
+            api.logging().logToError("Invalid ignored parameter rule: " + spec + " - " + e.getMessage());
+            return null;
+        }
+    }
+
+    private String wildcardToRegex(String spec) {
+        StringBuilder regex = new StringBuilder();
+        for (int i = 0; i < spec.length(); i++) {
+            char ch = spec.charAt(i);
+            if (ch == '*') {
+                regex.append(".*");
+            } else if (ch == '?') {
+                regex.append('.');
+            } else {
+                regex.append(Pattern.quote(String.valueOf(ch)));
+            }
+        }
+        return regex.toString();
+    }
+
     /**
      * Phương thức tiện ích để tạo một JTable với các thuộc tính chung.
      */
@@ -1003,7 +1088,8 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             props.setProperty("autoBypassNoParam", String.valueOf(autoBypassNoParam));
             props.setProperty("exclude_status_code", valueOrEmpty(exclude_status_code));
             props.setProperty("path_parameter_rules", valueOrEmpty(path_parameter_rules));
-            
+            props.setProperty("ignored_parameter_rules", valueOrEmpty(ignored_parameter_rules));
+
             StringWriter writer = new StringWriter();
             props.store(writer, null);
             api.persistence().extensionData().setString("settings", writer.toString());
@@ -1046,11 +1132,16 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 autoBypassNoParam = Boolean.parseBoolean(props.getProperty("autoBypassNoParam", "false"));
                 exclude_status_code = props.getProperty("exclude_status_code", "");
                 path_parameter_rules = props.getProperty("path_parameter_rules", "");
+                ignored_parameter_rules = props.getProperty("ignored_parameter_rules", "");
             }
             if (path_parameter_rules == null) {
                 path_parameter_rules = "";
             }
+            if (ignored_parameter_rules == null) {
+                ignored_parameter_rules = "";
+            }
             compiledPathParameterRules = compilePathParameterRules(path_parameter_rules);
+            compiledIgnoredParameterRules = compileIgnoredParameterRules(ignored_parameter_rules);
         } catch (Exception e) {
             api.logging().logToError("Failed to load settings: " + e.getMessage());
         }
