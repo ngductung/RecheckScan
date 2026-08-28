@@ -13,6 +13,9 @@ import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.ContentType;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.scanner.AuditConfiguration;
+import burp.api.montoya.scanner.BuiltInAuditConfiguration;
+import burp.api.montoya.scanner.audit.Audit;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -40,6 +43,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -70,6 +74,15 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
     private List<String> compiledEndpoints = new ArrayList<>();
 
     private DefaultTableModel tableModel;
+
+    /**
+     * Cache request thật gần nhất theo từng đơn vị (host|endpoint|opType|rootField) để có thể
+     * "Send to Repeater/Organizer/Intruder/Scanner" trực tiếp từ bảng. Chỉ tồn tại trong RAM của
+     * session (mất khi restart Burp).
+     */
+    private final ConcurrentHashMap<String, HttpRequest> requestCache = new ConcurrentHashMap<>();
+    /** Audit dùng chung cho tính năng "Active scan" (tạo lười, tái sử dụng). */
+    private Audit activeAudit;
 
     // Chỉ số cột của TableModel.
     private static final int COL_OP_TYPE = 0;
@@ -184,6 +197,13 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         // Request từ công cụ khác (Proxy/Repeater) và nằm trong scope.
         if (!api.scope().isInScope(request.url())) {
             return;
+        }
+
+        // Lưu lại request thật để có thể Send to Repeater/Organizer/Scanner từ bảng.
+        if (requestCache.size() < 10000) {
+            for (GraphQLOperation op : operations) {
+                requestCache.put(cacheKey(host, endpoint, op.operationType(), op.rootField()), request);
+            }
         }
 
         final boolean fromRepeater = sourceType == ToolType.REPEATER;
@@ -694,6 +714,21 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         });
         contextMenu.add(copyItem);
 
+        // Các hành động gửi request thật (tìm lại đúng request để scan/repeat).
+        contextMenu.addSeparator();
+        JMenuItem repeaterItem = new JMenuItem("Send to Repeater");
+        repeaterItem.addActionListener(e -> sendSelectedRows(table, SendAction.REPEATER));
+        contextMenu.add(repeaterItem);
+        JMenuItem intruderItem = new JMenuItem("Send to Intruder");
+        intruderItem.addActionListener(e -> sendSelectedRows(table, SendAction.INTRUDER));
+        contextMenu.add(intruderItem);
+        JMenuItem organizerItem = new JMenuItem("Send to Organizer");
+        organizerItem.addActionListener(e -> sendSelectedRows(table, SendAction.ORGANIZER));
+        contextMenu.add(organizerItem);
+        JMenuItem scanItem = new JMenuItem("Active scan (send to Scanner)");
+        scanItem.addActionListener(e -> sendSelectedRows(table, SendAction.SCAN));
+        contextMenu.add(scanItem);
+
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override
             public void mousePressed(java.awt.event.MouseEvent e) {
@@ -757,6 +792,74 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
     @FunctionalInterface
     interface SearchHandler {
         void apply(String keyword, TableRowSorter<DefaultTableModel> sorter);
+    }
+
+    private enum SendAction {REPEATER, INTRUDER, ORGANIZER, SCAN}
+
+    /** Khóa cache request theo đúng đơn vị định danh của một dòng. */
+    private String cacheKey(String host, String endpoint, String opType, String rootField) {
+        return host + " " + endpoint + " " + opType + " " + rootField;
+    }
+
+    /**
+     * Gửi request thật (đã cache) của các dòng đang chọn tới Repeater/Intruder/Organizer/Scanner.
+     * Nếu dòng chưa có request trong cache (chưa thấy traffic hoặc đã restart Burp) thì báo lại.
+     */
+    private void sendSelectedRows(JTable table, SendAction action) {
+        int[] rows = table.getSelectedRows();
+        if (rows.length == 0) {
+            return;
+        }
+        int sent = 0;
+        int missing = 0;
+        for (int viewRow : rows) {
+            int m = table.convertRowIndexToModel(viewRow);
+            String opType = (String) tableModel.getValueAt(m, COL_OP_TYPE);
+            String field = (String) tableModel.getValueAt(m, COL_FIELD);
+            String host = (String) tableModel.getValueAt(m, COL_HOST);
+            String endpoint = (String) tableModel.getValueAt(m, COL_ENDPOINT);
+            if (opType == null || field == null || host == null || endpoint == null) {
+                continue;
+            }
+            HttpRequest req = requestCache.get(cacheKey(host, endpoint, opType, field));
+            if (req == null) {
+                missing++;
+                continue;
+            }
+            try {
+                String tabName = truncate(opType + " " + field, 32);
+                switch (action) {
+                    case REPEATER -> api.repeater().sendToRepeater(req, tabName);
+                    case INTRUDER -> api.intruder().sendToIntruder(req);
+                    case ORGANIZER -> api.organizer().sendToOrganizer(req);
+                    case SCAN -> activeAudit().addRequest(req);
+                }
+                sent++;
+            } catch (Exception ex) {
+                api.logging().logToError("Send action failed: " + ex.getMessage(), ex);
+            }
+        }
+        if (missing > 0) {
+            JOptionPane.showMessageDialog(null,
+                    "Đã gửi " + sent + " request. " + missing + " dòng chưa có request trong cache.\n"
+                    + "Hãy để request tương ứng đi qua Proxy/Repeater một lần (cache chỉ tồn tại trong "
+                    + "session, mất khi restart Burp).");
+        } else if (action == SendAction.SCAN && sent > 0) {
+            JOptionPane.showMessageDialog(null, "Đã thêm " + sent + " request vào Active audit của Scanner.");
+        }
+    }
+
+    /** Tạo (lười) và tái sử dụng một Active audit để gom các request cần scan. */
+    private synchronized Audit activeAudit() {
+        if (activeAudit == null) {
+            activeAudit = api.scanner().startAudit(
+                    AuditConfiguration.auditConfiguration(BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
+        }
+        return activeAudit;
+    }
+
+    private String truncate(String s, int max) {
+        return s.length() <= max ? s : s.substring(0, max);
     }
 
     private void updateStats() {

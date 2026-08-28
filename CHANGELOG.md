@@ -2,6 +2,16 @@
 
 ## [2.1-GRAPHQL] - 2026-08-28
 
+### Added (cập nhật 2)
+- ✅ **Context menu Send**: chuột phải trên bảng → **Send to Repeater / Intruder / Organizer /
+  Active scan (Scanner)**. Tool cache request thật gần nhất theo từng đơn vị
+  `(host|endpoint|opType|rootField)` (trong RAM session) để tìm lại đúng request mà scan/repeat,
+  khỏi phải mò trong Proxy history. Active scan dùng `LEGACY_ACTIVE_AUDIT_CHECKS`.
+
+### Fixed
+- ✅ Mỗi jar chỉ chứa DUY NHẤT một class `BurpExtension` (shade `<filters>` + file
+  `META-INF/services/burp.api.montoya.BurpExtension`) để Burp không nạp nhầm bản REST.
+
 ### Added (cập nhật)
 - ✅ **Flatten `variables`**: đọc JSON `variables` và trải các key của input object thành pseudo-argument
   (vd `input` → `input.expressionOutput`, `input.filters[].field`, `input.groupBys[]`). Nhờ đó các
