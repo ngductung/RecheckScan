@@ -208,6 +208,21 @@ CREATE TABLE graphql_log (
 Nạp file `...-graphql-...jar` vào Burp (`Extensions → Add → Java`) để dùng bản GraphQL. Hai
 extension độc lập, có thể chạy đồng thời và dùng file DB riêng (`scan_graphql.db`).
 
+### Troubleshooting bản GraphQL
+
+**Nạp jar rồi mà không thấy tab GraphQL / vẫn ra giao diện REST:**
+- Mỗi jar phải chỉ chứa DUY NHẤT một class `BurpExtension`. Nếu jar chứa cả class REST lẫn GraphQL,
+  Burp có thể nạp nhầm bản REST. Dùng đúng jar `...-graphql-...jar` (hoặc `RecheckScan-GraphQL.jar`)
+  đã loại class REST. Kiểm tra `Extensions → Installed`: tên phải là **"Recheck Scan GraphQL"**.
+- Xem `Extensions → Installed → (chọn ext) → Output/Errors` để thấy log khởi tạo và lỗi (nếu có).
+
+**Thấy tab nhưng không ghi nhận request GraphQL nào:**
+- **Phải thêm target vào Scope** (`Target → Scope`). Với traffic từ Proxy/Repeater, extension chỉ xử lý
+  request **in-scope** (giống bản REST).
+- Chỉ những request có chứa GraphQL query mới được nhận (POST body có `query`, `application/graphql`,
+  hoặc `GET ?query=`). Request phải có **response** đi kèm mới được xử lý.
+- Nếu đặt "GraphQL Endpoint Paths" thì path phải khớp; để trống để tự động nhận diện theo nội dung.
+
 ### Settings bản GraphQL
 
 - **GraphQL Endpoint Paths** *(tùy chọn)*: danh sách path (cách nhau bởi dấu phẩy/xuống dòng, vd
