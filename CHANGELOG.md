@@ -2,6 +2,15 @@
 
 ## [2.1-GRAPHQL] - 2026-08-28
 
+### Optimized (cập nhật 4)
+- ✅ **Chuẩn hóa endpoint**: `/graphql` và `/graphql/` được coi là một (bỏ dấu `/` cuối) để không
+  tạo hai dòng trùng cho cùng một endpoint.
+- ✅ **Thread-safe hơn**: `loadData` / `getStatus` / `getAllArgsById` được đồng bộ (synchronized)
+  để tránh truy cập Connection SQLite đồng thời với các luồng ghi.
+- ✅ **Đã test end-to-end**: bộ test chạy trực tiếp `GraphQLDatabaseManager` (25/25 PASS) kiểm chứng
+  insert/idempotent, auto-mark theo operation, phát hiện param mới sau khi đã scan, processScannedArgs,
+  autoBypass, không tạo dòng mới từ Scanner, repeater status, mark thủ công.
+
 ### Fixed (cập nhật 3)
 - ✅ **Auto-mark Scanned tin cậy hơn**: khi có request từ Scanner chạm tới một operation đã biết,
   tool đánh dấu **cả operation** là Scanned thay vì đòi khớp từng argument (Scanner biến đổi giá trị

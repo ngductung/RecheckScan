@@ -101,7 +101,7 @@ public class GraphQLDatabaseManager {
      * {OperationType, OperationName, RootField, Host, Endpoint, UnscannedArgs, Scanned, Rejected,
      * Bypass, Repeater(hidden), id(hidden)}.
      */
-    public List<Object[]> loadData() {
+    public synchronized List<Object[]> loadData() {
         List<Object[]> rows = new ArrayList<>();
         String sql = "SELECT id, host, endpoint, operation_type, operation_name, root_field, "
                 + "unscanned_args, scanned_args, is_scanned, is_rejected, is_bypassed, is_from_repeater "
@@ -363,7 +363,7 @@ public class GraphQLDatabaseManager {
     /**
      * Lấy trạng thái (is_scanned, is_rejected, is_bypassed) để quyết định highlight/note.
      */
-    public Object[] getStatus(String host, String endpoint, String opType, String rootField) {
+    public synchronized Object[] getStatus(String host, String endpoint, String opType, String rootField) {
         String sql = "SELECT is_scanned, is_rejected, is_bypassed FROM graphql_log "
                 + "WHERE host = ? AND endpoint = ? AND operation_type = ? AND root_field = ?";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
@@ -384,7 +384,7 @@ public class GraphQLDatabaseManager {
     /**
      * Lấy toàn bộ argument (unscanned + scanned) của một dòng theo id (dùng cho context menu copy).
      */
-    public Set<String> getAllArgsById(int id) {
+    public synchronized Set<String> getAllArgsById(int id) {
         String sql = "SELECT unscanned_args, scanned_args FROM graphql_log WHERE id = ?";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setInt(1, id);

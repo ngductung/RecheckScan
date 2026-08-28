@@ -178,7 +178,8 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         }
 
         String host = request.httpService().host();
-        final String endpoint = path;
+        // Chuẩn hóa endpoint để '/graphql' và '/graphql/' không tạo hai dòng khác nhau.
+        final String endpoint = normalizeEndpoint(path);
 
         // Request từ Scanner -> đánh dấu operation đã scan.
         if (sourceType == ToolType.SCANNER) {
@@ -430,6 +431,17 @@ public class GraphQLRecheckScanExtension implements BurpExtension, ExtensionUnlo
         }
         String trimmed = body.trim();
         return trimmed.startsWith("{") || trimmed.startsWith("[");
+    }
+
+    /** Bỏ dấu '/' ở cuối (trừ khi path chỉ là "/") để endpoint ổn định. */
+    private String normalizeEndpoint(String path) {
+        if (path == null || path.isEmpty()) {
+            return "/";
+        }
+        if (path.length() > 1 && path.endsWith("/")) {
+            return path.substring(0, path.length() - 1);
+        }
+        return path;
     }
 
     private boolean matchesEndpoint(String path) {
