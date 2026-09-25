@@ -145,6 +145,52 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
      * Gom nhiều lần cập nhật thống kê liên tiếp thành một lần tính lại.
      */
     private javax.swing.Timer statsRefreshTimer;
+    /** Các control trên tab Settings, để nạp lại giá trị khi đổi file DB. Chỉ dùng trên EDT. */
+    private SettingsForm settingsForm;
+
+    /** Tham chiếu tới các control của tab Settings. */
+    private final class SettingsForm {
+        private final JTextArea extensionArea;
+        private final JTextField outputPathField;
+        private final JTextField excludeStatusCodesField;
+        private final JTextArea pathParameterRulesArea;
+        private final JTextArea ignoredParameterRulesArea;
+        private final JTextField annotationBatchField;
+        private final JCheckBox highlightCheckBox;
+        private final JCheckBox noteCheckBox;
+        private final JCheckBox autoBypassCheckBox;
+        private final JCheckBox autoAnnotateHistoryCheckBox;
+
+        private SettingsForm(JTextArea extensionArea, JTextField outputPathField, JTextField excludeStatusCodesField,
+                             JTextArea pathParameterRulesArea, JTextArea ignoredParameterRulesArea,
+                             JTextField annotationBatchField, JCheckBox highlightCheckBox, JCheckBox noteCheckBox,
+                             JCheckBox autoBypassCheckBox, JCheckBox autoAnnotateHistoryCheckBox) {
+            this.extensionArea = extensionArea;
+            this.outputPathField = outputPathField;
+            this.excludeStatusCodesField = excludeStatusCodesField;
+            this.pathParameterRulesArea = pathParameterRulesArea;
+            this.ignoredParameterRulesArea = ignoredParameterRulesArea;
+            this.annotationBatchField = annotationBatchField;
+            this.highlightCheckBox = highlightCheckBox;
+            this.noteCheckBox = noteCheckBox;
+            this.autoBypassCheckBox = autoBypassCheckBox;
+            this.autoAnnotateHistoryCheckBox = autoAnnotateHistoryCheckBox;
+        }
+
+        /** Đưa cấu hình đang có trong bộ nhớ lên form. Chỉ gọi trên EDT. */
+        private void showCurrentValues() {
+            extensionArea.setText(valueOrEmpty(exclude_extensions));
+            outputPathField.setText(valueOrEmpty(savedOutputPath));
+            excludeStatusCodesField.setText(valueOrEmpty(exclude_status_code));
+            pathParameterRulesArea.setText(valueOrEmpty(path_parameter_rules));
+            ignoredParameterRulesArea.setText(valueOrEmpty(ignored_parameter_rules));
+            annotationBatchField.setText(String.valueOf(annotationSweepMinBatch));
+            highlightCheckBox.setSelected(highlightEnabled);
+            noteCheckBox.setSelected(noteEnabled);
+            autoBypassCheckBox.setSelected(autoBypassNoParam);
+            autoAnnotateHistoryCheckBox.setSelected(autoAnnotateHistory);
+        }
+    }
 
     // Các nhãn (JLabel) để hiển thị thống kê trên tab Settings.
     private final JLabel totalLbl = new JLabel("Total: 0");
@@ -165,11 +211,12 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         // Đăng ký handler để dọn dẹp tài nguyên (đóng kết nối CSDL) khi extension bị gỡ.
         api.extension().registerUnloadingHandler(this);
 
-        // Tải các cài đặt đã lưu từ tệp.
-        loadSavedSettings();
-        // Khởi tạo trình quản lý CSDL.
+        // Burp chỉ giữ đường dẫn file DB (đi theo project); mọi cấu hình khác nằm trong DB
+        // để nhiều project Burp trỏ cùng một file dùng chung cấu hình.
+        Properties legacyBurpSettings = loadOutputPathFromBurp();
         databaseManager = new DatabaseManager(api);
         databaseManager.initialize(savedOutputPath);
+        loadSettingsFromDatabase(legacyBurpSettings);
 
         // Tạo giao diện người dùng trên luồng Event Dispatch Thread (EDT) của Swing để đảm bảo an toàn luồng.
         SwingUtilities.invokeLater(this::createUI);
@@ -251,7 +298,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
 
                     // Nhánh 2a: Tự động bypass cho API không có tham số.
                     if (requestParams.isEmpty() && autoBypassNoParam) {
-                        submitDbTask(() -> databaseManager.autoBypassApi(method, host, path));
+                        if (needsAutoBypassWrite(method, host, path)) {
+                            submitDbTask(() -> databaseManager.autoBypassApi(method, host, path));
+                        }
                          // Thêm highlight/note ngay lập tức cho request này.
                          if (highlightEnabled) response.annotations().setHighlightColor(HighlightColor.YELLOW);
                          if (noteEnabled) response.annotations().setNotes("Bypassed");
@@ -260,7 +309,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                         // Annotation được suy ra từ cache trạng thái, cho ra đúng kết quả mà
                         // insertOrUpdateApi sẽ để lại, nhưng không phải chạy SQL trên luồng HTTP.
                         applyAnnotations(response, method, host, path, requestParams);
-                        submitDbTask(() -> databaseManager.insertOrUpdateApi(method, host, path, requestParams));
+                        if (hasUnknownParams(method, host, path, requestParams)) {
+                            submitDbTask(() -> databaseManager.insertOrUpdateApi(method, host, path, requestParams));
+                        }
                     }
                 }
 
@@ -307,6 +358,26 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     }
 
     /**
+     * Request có cần ghi xuống CSDL không: chỉ khi API chưa có trong cache hoặc mang param mới.
+     * Request lặp lại của API đã biết đủ param thì bỏ qua ngay trên luồng HTTP, không tốn
+     * câu SQL nào. Cache được cập nhật trên luồng CSDL sau mỗi lần ghi nên luôn theo kịp.
+     */
+    boolean hasUnknownParams(String method, String host, String path, Set<String> requestParams) {
+        DatabaseManager.ApiStatus status = statusCache.get(DatabaseManager.statusKey(method, host, path));
+        return status == null || !status.knownParams.containsAll(requestParams);
+    }
+
+    /**
+     * Auto-bypass chỉ cần ghi khi API chưa có, hoặc chưa mang cờ nào. Đã bypass/scan/reject thì
+     * câu upsert không đổi gì, nên bỏ qua. Trường hợp còn lại (API có cờ tắt nhưng từng có param)
+     * vẫn gửi xuống, CSDL tự quyết định và không ghi nếu không cần.
+     */
+    boolean needsAutoBypassWrite(String method, String host, String path) {
+        DatabaseManager.ApiStatus status = statusCache.get(DatabaseManager.statusKey(method, host, path));
+        return status == null || !(status.bypassed || status.scanned || status.rejected);
+    }
+
+    /**
      * Đẩy một thao tác ghi CSDL sang luồng nền, rồi đồng bộ kết quả lên cache và giao diện.
      * Chỉ dòng thực sự thay đổi được cập nhật, thay cho việc tải lại toàn bộ bảng.
      *
@@ -340,8 +411,22 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     private void cacheStatus(DatabaseManager.ApiUpdate update) {
         Object[] row = update.row;
         String key = DatabaseManager.statusKey((String) row[0], (String) row[1], (String) row[2]);
-        statusCache.put(key, update.status);
-        queueAnnotationUpdate(key);
+        DatabaseManager.ApiStatus previous = statusCache.put(key, update.status);
+        if (flagsChanged(previous, update.status)) {
+            queueAnnotationUpdate(key);
+        }
+    }
+
+    /**
+     * Annotation trong history chỉ phụ thuộc 3 cờ scanned/rejected/bypassed, nên chỉ khi một
+     * trong ba cờ thực sự đổi mới cần sửa lại history. Request lặp lại của API đã biết (ví dụ
+     * bypass -> bypass) không được xếp hàng. API chưa có trong cache coi như mọi cờ đều tắt.
+     */
+    static boolean flagsChanged(DatabaseManager.ApiStatus previous, DatabaseManager.ApiStatus current) {
+        boolean wasScanned = previous != null && previous.scanned;
+        boolean wasRejected = previous != null && previous.rejected;
+        boolean wasBypassed = previous != null && previous.bypassed;
+        return wasScanned != current.scanned || wasRejected != current.rejected || wasBypassed != current.bypassed;
     }
 
     /**
@@ -355,12 +440,15 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 (String) tableModel.getValueAt(modelRow, 1),
                 (String) tableModel.getValueAt(modelRow, 2));
         DatabaseManager.ApiStatus previous = statusCache.get(key);
-        statusCache.put(key, new DatabaseManager.ApiStatus(
+        DatabaseManager.ApiStatus current = new DatabaseManager.ApiStatus(
                 Boolean.TRUE.equals(tableModel.getValueAt(modelRow, 4)),
                 Boolean.TRUE.equals(tableModel.getValueAt(modelRow, 5)),
                 Boolean.TRUE.equals(tableModel.getValueAt(modelRow, 6)),
-                previous == null ? Set.of() : previous.knownParams));
-        queueAnnotationUpdate(key);
+                previous == null ? Set.of() : previous.knownParams);
+        statusCache.put(key, current);
+        if (flagsChanged(previous, current)) {
+            queueAnnotationUpdate(key);
+        }
     }
 
     /**
@@ -860,9 +948,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         tabs.addTab("Logs", logsPanel);
 
         // --- Cài đặt Tab "Settings" ---
-        JTextArea extensionArea = new JTextArea(exclude_extensions != null ? exclude_extensions : ".js,.svg,.css,.png,.jpg,.ttf,.ico,.html,.map,.gif,.woff2,.bcmap,.jpeg,.woff");
+        JTextArea extensionArea = new JTextArea(exclude_extensions != null ? exclude_extensions : DEFAULT_EXCLUDE_EXTENSIONS);
         JTextField outputPathField = new JTextField(savedOutputPath != null ? savedOutputPath : "");
-        JTextField excludeStatusCodesField = new JTextField(exclude_status_code != null ? exclude_status_code : "404,405");
+        JTextField excludeStatusCodesField = new JTextField(exclude_status_code != null ? exclude_status_code : DEFAULT_EXCLUDE_STATUS_CODES);
         JTextArea pathParameterRulesArea = new JTextArea(path_parameter_rules != null ? path_parameter_rules : "");
         JTextArea ignoredParameterRulesArea = new JTextArea(ignored_parameter_rules != null ? ignored_parameter_rules : "");
         JButton browseButton = new JButton("Browse");
@@ -870,7 +958,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             JFileChooser fileChooser = new JFileChooser();
             fileChooser.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
             if (fileChooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
-                outputPathField.setText(fileChooser.getSelectedFile().getAbsolutePath());
+                String chosenPath = fileChooser.getSelectedFile().getAbsolutePath();
+                outputPathField.setText(chosenPath);
+                switchDatabase(chosenPath);
             }
         });
         JCheckBox highlightCheckBox = new JCheckBox("Highlight Scanned/Bypassed requests in Proxy history", highlightEnabled);
@@ -901,8 +991,14 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 + ANNOTATION_SWEEP_DEFAULT_MIN_BATCH + ", nhỏ nhất 1. Đọc lại khi bấm Apply.");
         JButton applyButton = new JButton("Apply");
         applyButton.addActionListener(e -> {
+            String requestedPath = outputPathField.getText().trim();
+            if (!databaseManager.resolveDbPath(requestedPath).equals(databaseManager.currentDbPath())) {
+                // Đường dẫn DB đổi: cấu hình phải đến từ file mới, không phải từ những gì đang gõ trên form.
+                switchDatabase(requestedPath);
+                return;
+            }
             exclude_extensions = extensionArea.getText().trim();
-            savedOutputPath = outputPathField.getText().trim();
+            savedOutputPath = requestedPath;
             exclude_status_code = excludeStatusCodesField.getText().trim();
             path_parameter_rules = pathParameterRulesArea.getText().trim();
             ignored_parameter_rules = ignoredParameterRulesArea.getText().trim();
@@ -970,7 +1066,14 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 progressDialog.setVisible(true);
             }
         });
-        tabs.addTab("Settings", SettingsPanel.create(extensionArea, outputPathField, browseButton, highlightCheckBox, noteCheckBox, autoBypassCheckBox, autoAnnotateHistoryCheckBox, annotationBatchField, applyButton, totalLbl, scannedLbl, rejectedLbl, bypassLbl, unverifiedLbl, excludeStatusCodesField, pathParameterRulesArea, ignoredParameterRulesArea));
+        settingsForm = new SettingsForm(extensionArea, outputPathField, excludeStatusCodesField, pathParameterRulesArea,
+                ignoredParameterRulesArea, annotationBatchField, highlightCheckBox, noteCheckBox, autoBypassCheckBox,
+                autoAnnotateHistoryCheckBox);
+        JButton resetDefaultButton = new JButton("Reset Default");
+        resetDefaultButton.setToolTipText("Đưa mọi cấu hình về mặc định và lưu vào file DB đang mở. "
+                + "Không đổi đường dẫn DB, không đụng dữ liệu API.");
+        resetDefaultButton.addActionListener(e -> resetSettingsToDefault());
+        tabs.addTab("Settings", SettingsPanel.create(extensionArea, outputPathField, browseButton, highlightCheckBox, noteCheckBox, autoBypassCheckBox, autoAnnotateHistoryCheckBox, annotationBatchField, applyButton, resetDefaultButton, totalLbl, scannedLbl, rejectedLbl, bypassLbl, unverifiedLbl, excludeStatusCodesField, pathParameterRulesArea, ignoredParameterRulesArea));
         
         // Đăng ký tab chính vào giao diện Burp.
         JPanel mainPanel = new JPanel(new BorderLayout());
@@ -1441,8 +1544,12 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                     || !(row[2] instanceof String path) || !(row[3] instanceof Integer dbId)) {
                 continue;
             }
-            byKey.put(DatabaseManager.statusKey(method, host, path),
-                    new RebuildTarget(method, host, path, paramsById.getOrDefault(dbId, Set.of()), refreshCookies));
+            // Dòng ghi trước khi có rule vẫn lưu path thô: normalize lại để khớp key của history
+            // (path đã normalize thì normalize thêm lần nữa không đổi). Chiều ngược lại - dòng đã
+            // có {placeholder} mà rule hiện tại không tái tạo được - do findByPlaceholder xử lý.
+            String storedPath = normalizePath(path);
+            byKey.put(DatabaseManager.statusKey(method, host, storedPath),
+                    new RebuildTarget(method, host, storedPath, paramsById.getOrDefault(dbId, Set.of()), refreshCookies));
         }
         if (byKey.isEmpty()) {
             return "Không có dòng hợp lệ nào được chọn.";
@@ -1470,12 +1577,94 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             if (rawPath == null || rawPath.isEmpty()) {
                 continue;
             }
-            RebuildTarget target = byKey.get(DatabaseManager.statusKey(
-                    request.method(), request.httpService().host(), normalizePath(rawPath)));
+            String method = request.method();
+            String host = request.httpService().host();
+            RebuildTarget target = byKey.get(DatabaseManager.statusKey(method, host, normalizePath(rawPath)));
+            if (target == null) {
+                // Rule hiện tại có thể không cho ra đúng dạng đã lưu trong DB (rule đổi, hoặc
+                // rỗng): khớp path thô với path đã lưu, coi mỗi {placeholder} là một segment.
+                target = findByPlaceholder(byKey.values(), method, host, rawPath);
+            }
             if (target != null) {
                 target.observe(request);
             }
         }
+    }
+
+    /**
+     * Chọn target cho một path thô: mỗi {placeholder} chỉ nhận segment thoả regex của rule
+     * cùng tên ({uuid}=uuid thì "Pentest1" không khớp - với rule đang nạp, path đó là một
+     * endpoint khác và được lưu thành dòng riêng). Placeholder không có rule cùng tên (rule đã
+     * xoá/đổi tên) thì nhận segment bất kỳ. Nhiều target cùng khớp thì lấy target cụ thể nhất.
+     */
+    private static RebuildTarget findByPlaceholder(Collection<RebuildTarget> targets, String method, String host, String rawPath) {
+        RebuildTarget best = null;
+        for (RebuildTarget target : targets) {
+            if (!target.method.equals(method) || !target.host.equals(host) || !target.matchesRawPath(rawPath)) {
+                continue;
+            }
+            if (best == null || moreSpecific(target.path, target.literalLength, best.path, best.literalLength)) {
+                best = target;
+            }
+        }
+        return best;
+    }
+
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{[^/{}]*\\}");
+
+    /**
+     * Regex segment của các rule KHÔNG path-aware, khoá theo placeholder ({id} -> [0-9]+).
+     * Nhiều rule cùng placeholder thì ghép bằng |. Rule path-aware không có regex cho riêng
+     * một segment nên không đưa vào; với chúng, "thoả rule" nghĩa là key normalize khớp,
+     * tầng đó đã được thử trước khi tới đây.
+     */
+    private Map<String, String> segmentRuleRegexByPlaceholder() {
+        Map<String, String> byPlaceholder = new HashMap<>();
+        for (PathParameterRule rule : compiledPathParameterRules) {
+            if (rule.isPathAware()) {
+                continue;
+            }
+            byPlaceholder.merge(rule.placeholder(), rule.pattern().pattern(), (a, b) -> a + "|" + b);
+        }
+        return byPlaceholder;
+    }
+
+    /**
+     * Biến một path đã normalize thành pattern khớp path thô. Mỗi {placeholder} khớp regex
+     * của rule cùng tên nếu có trong {@code segmentRegexByPlaceholder}, không thì khớp một
+     * segment bất kỳ; phần còn lại khớp nguyên văn. Trả về null nếu không có placeholder nào.
+     */
+    static Pattern placeholderPattern(String normalizedPath, Map<String, String> segmentRegexByPlaceholder) {
+        if (normalizedPath == null || normalizedPath.indexOf('{') < 0) {
+            return null;
+        }
+        Matcher matcher = PLACEHOLDER.matcher(normalizedPath);
+        StringBuilder regex = new StringBuilder("^");
+        int last = 0;
+        while (matcher.find()) {
+            String segmentRegex = segmentRegexByPlaceholder.get(matcher.group());
+            regex.append(Pattern.quote(normalizedPath.substring(last, matcher.start())))
+                    .append(segmentRegex == null ? "[^/]+" : "(?:" + segmentRegex + ")");
+            last = matcher.end();
+        }
+        regex.append(Pattern.quote(normalizedPath.substring(last))).append("$");
+        return Pattern.compile(regex.toString());
+    }
+
+    /**
+     * Ứng viên cụ thể hơn: phần literal dài hơn; bằng nhau thì theo thứ tự chữ cái để kết quả
+     * ổn định giữa các lần chạy (statusCache là ConcurrentHashMap, thứ tự duyệt không cố định).
+     */
+    private static boolean moreSpecific(String candidate, int candidateLiteral, String current, int currentLiteral) {
+        if (candidateLiteral != currentLiteral) {
+            return candidateLiteral > currentLiteral;
+        }
+        return candidate.compareTo(current) < 0;
+    }
+
+    /** Độ dài phần literal của path đã normalize: càng dài càng cụ thể. */
+    static int literalLength(String normalizedPath) {
+        return normalizedPath == null ? 0 : PLACEHOLDER.matcher(normalizedPath).replaceAll("").length();
     }
 
     /**
@@ -1493,28 +1682,35 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         }
         String method = current.method();
         String host = current.httpService().host();
-        String path = normalizePath(current.pathWithoutQuery());
-        String key = DatabaseManager.statusKey(method, host, path);
-        DatabaseManager.ApiStatus status = statusCache.get(key);
+        String rawPath = current.pathWithoutQuery();
+        String label = method + " " + host + rawPath;
 
-        if (status == null || status.knownParams.isEmpty()) {
-            showInfoDialog(method + " " + host + path
-                    + ":\nAPI này chưa có trong Recheck Scan, hoặc không có tham số nào được ghi nhận.");
+        Map.Entry<String, DatabaseManager.ApiStatus> match = findStatusForRawPath(method, host, rawPath);
+        if (match == null) {
+            showInfoDialog(label + ":\nAPI này chưa có trong Recheck Scan.");
+            return;
+        }
+        // Dùng đúng path đã lưu trong DB làm định danh, để history cũng khớp theo dạng đó.
+        final String path = match.getKey();
+        final Set<String> knownParams = match.getValue().knownParams;
+        if (knownParams.isEmpty()) {
+            showInfoDialog(label + ":\nAPI có trong Recheck Scan (" + path
+                    + ") nhưng không có tham số nào được ghi nhận - không có gì để điền.");
             return;
         }
 
         // Duyệt history trên luồng của sweeper để không bao giờ có hai lượt duyệt song song.
         runOnSweeperThread(() -> {
             try {
-                RebuildTarget target = new RebuildTarget(method, host, path, status.knownParams, refreshCookies);
-                observeHistory(Map.of(key, target));
+                RebuildTarget target = new RebuildTarget(method, host, path, knownParams, refreshCookies);
+                observeHistory(Map.of(DatabaseManager.statusKey(method, host, path), target));
 
                 FillReport report = new FillReport();
                 HttpRequest filled = target.fillMissingParams(current, report);
 
                 String summary = method + " " + host + path + ": thêm " + report.added + " param còn thiếu, "
                         + report.fromHistory + " lấy giá trị từ Proxy history"
-                        + " (" + status.knownParams.size() + " param đã biết)." + report.details();
+                        + " (" + knownParams.size() + " param đã biết)." + report.details();
                 api.logging().logToOutput(summary);
 
                 boolean nothingChanged = report.added == 0 && report.fromHistory == 0
@@ -1540,6 +1736,41 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         });
     }
 
+    /**
+     * Tìm trạng thái của API cho một path thô: thử key normalize theo rule hiện tại, rồi key
+     * thô, cuối cùng quét các path đã lưu có placeholder và khớp theo từng segment. Nhờ vậy
+     * request /api/users/123 vẫn tìm ra dòng /api/users/{id} kể cả khi rule đã đổi hoặc rỗng.
+     *
+     * @return Cặp (path đã lưu trong DB, trạng thái), hoặc null nếu không có.
+     */
+    private Map.Entry<String, DatabaseManager.ApiStatus> findStatusForRawPath(String method, String host, String rawPath) {
+        for (String candidate : new String[]{normalizePath(rawPath), rawPath}) {
+            DatabaseManager.ApiStatus status = statusCache.get(DatabaseManager.statusKey(method, host, candidate));
+            if (status != null) {
+                return Map.entry(candidate, status);
+            }
+        }
+        String prefix = method + '\u0000' + host + '\u0000';
+        Map<String, String> segmentRegex = segmentRuleRegexByPlaceholder();
+        // Placeholder phải thoả rule cùng tên (không có rule thì nhận segment bất kỳ).
+        // Nhiều dòng cùng khớp thì lấy dòng cụ thể nhất (phần literal dài nhất).
+        Map.Entry<String, DatabaseManager.ApiStatus> best = null;
+        for (Map.Entry<String, DatabaseManager.ApiStatus> entry : statusCache.entrySet()) {
+            if (!entry.getKey().startsWith(prefix)) {
+                continue;
+            }
+            String storedPath = entry.getKey().substring(prefix.length());
+            Pattern pattern = placeholderPattern(storedPath, segmentRegex);
+            if (pattern == null || !pattern.matcher(rawPath).matches()) {
+                continue;
+            }
+            if (best == null || moreSpecific(storedPath, literalLength(storedPath), best.getKey(), literalLength(best.getKey()))) {
+                best = Map.entry(storedPath, entry.getValue());
+            }
+        }
+        return best;
+    }
+
     private void showInfoDialog(String message) {
         SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
                 null, message, "Recheck Scan", JOptionPane.INFORMATION_MESSAGE));
@@ -1563,6 +1794,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         private int matchedItems = 0;
         /** Giá trị param đã quan sát được trong history, ưu tiên giá trị mới nhất khác rỗng. */
         private final Map<String, HttpParameter> observedParams = new HashMap<>();
+        /** Pattern khớp path thô theo placeholder, null nếu path không có placeholder. */
+        private final Pattern pathPattern;
+        private final int literalLength;
 
         private RebuildTarget(String method, String host, String path, Set<String> wantedParams, boolean refreshCookies) {
             this.method = method;
@@ -1570,6 +1804,12 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             this.path = path;
             this.wantedParams = wantedParams == null ? Set.of() : wantedParams;
             this.refreshCookies = refreshCookies;
+            this.pathPattern = placeholderPattern(path, segmentRuleRegexByPlaceholder());
+            this.literalLength = literalLength(path);
+        }
+
+        private boolean matchesRawPath(String rawPath) {
+            return pathPattern != null && rawPath != null && pathPattern.matcher(rawPath).matches();
         }
 
         private void observe(HttpRequest request) {
@@ -1601,8 +1841,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         private String rebuildAndSend() {
             String label = method + " " + host + path;
             if (baseRequest == null) {
-                return label + ": KHÔNG tái tạo - không có request nào của API này trong Proxy history "
-                        + "(dựng mới sẽ phải bịa toàn bộ header/giá trị).";
+                return label + ": KHÔNG tái tạo - không có request nào trong Proxy history khớp "
+                        + path + (pathPattern == null ? "" : " (mỗi {..} = một segment thoả rule cùng tên)")
+                        + " (dựng mới sẽ phải bịa toàn bộ header/giá trị).";
             }
 
             FillReport report = new FillReport();
@@ -1973,31 +2214,188 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     /**
      * Lưu các cài đặt hiện tại vào persistence extension data (đi theo project).
      */
+    /** Mặc định khi cả Burp lẫn DB đều chưa có giá trị. */
+    static final String DEFAULT_EXCLUDE_EXTENSIONS =
+            ".js,.svg,.css,.png,.jpg,.ttf,.ico,.html,.map,.gif,.woff2,.bcmap,.jpeg,.woff";
+    static final String DEFAULT_EXCLUDE_STATUS_CODES = "404,405";
+
+    /** Các key cấu hình lưu trong DB (Burp chỉ giữ đường dẫn DB). */
+    private static final List<String> DB_SETTING_KEYS = List.of(
+            "exclude_extensions", "exclude_status_code", "path_parameter_rules", "ignored_parameter_rules",
+            "highlightEnabled", "noteEnabled", "autoBypassNoParam", "autoAnnotateHistory", "annotationSweepMinBatch");
+
+    /** Lưu: đường dẫn DB vào Burp (đồng bộ, rẻ), phần còn lại vào DB trên luồng CSDL. */
     private void saveSettings() {
+        saveOutputPathToBurp();
+        runOnDbThread(this::persistSettingsNow);
+    }
+
+    /** Ghi cấu hình hiện tại vào DB ngay trên luồng gọi; dùng khi đã ở luồng CSDL hoặc lúc khởi động. */
+    private void persistSettingsNow() {
+        databaseManager.saveSettings(settingsSnapshot());
+    }
+
+    /** Chụp cấu hình trong bộ nhớ thành map key -> value để ghi vào DB. */
+    private Map<String, String> settingsSnapshot() {
+        Map<String, String> snapshot = new LinkedHashMap<>();
+        snapshot.put("exclude_extensions", valueOrEmpty(exclude_extensions));
+        snapshot.put("exclude_status_code", valueOrEmpty(exclude_status_code));
+        snapshot.put("path_parameter_rules", valueOrEmpty(path_parameter_rules));
+        snapshot.put("ignored_parameter_rules", valueOrEmpty(ignored_parameter_rules));
+        snapshot.put("highlightEnabled", String.valueOf(highlightEnabled));
+        snapshot.put("noteEnabled", String.valueOf(noteEnabled));
+        snapshot.put("autoBypassNoParam", String.valueOf(autoBypassNoParam));
+        snapshot.put("autoAnnotateHistory", String.valueOf(autoAnnotateHistory));
+        snapshot.put("annotationSweepMinBatch", String.valueOf(annotationSweepMinBatch));
+        return snapshot;
+    }
+
+    /** Nạp map key -> value (từ DB hoặc từ Burp cũ) vào bộ nhớ và biên dịch lại rule. */
+    private void applySettings(Map<String, String> settings) {
+        exclude_extensions = settings.getOrDefault("exclude_extensions", DEFAULT_EXCLUDE_EXTENSIONS);
+        exclude_status_code = settings.getOrDefault("exclude_status_code", DEFAULT_EXCLUDE_STATUS_CODES);
+        path_parameter_rules = settings.getOrDefault("path_parameter_rules", "");
+        ignored_parameter_rules = settings.getOrDefault("ignored_parameter_rules", "");
+        highlightEnabled = Boolean.parseBoolean(settings.getOrDefault("highlightEnabled", "false"));
+        noteEnabled = Boolean.parseBoolean(settings.getOrDefault("noteEnabled", "false"));
+        autoBypassNoParam = Boolean.parseBoolean(settings.getOrDefault("autoBypassNoParam", "false"));
+        autoAnnotateHistory = Boolean.parseBoolean(settings.getOrDefault("autoAnnotateHistory", "false"));
+        annotationSweepMinBatch = parseSweepBatchSize(settings.get("annotationSweepMinBatch"));
+        compiledPathParameterRules = compilePathParameterRules(path_parameter_rules);
+        compiledIgnoredParameterRules = compileIgnoredParameterRules(ignored_parameter_rules);
+        excludedStatusCodes = parseStatusCodes(exclude_status_code);
+    }
+
+    /**
+     * Nạp cấu hình từ file DB đang mở. DB chưa có cấu hình (file mới, hoặc tạo bởi bản cũ
+     * còn lưu mọi thứ trong Burp) thì lấy từ {@code legacyBurpSettings} rồi ghi vào DB -
+     * đây là bước chuyển một lần cho người dùng cũ, không mất cấu hình đang có.
+     */
+    private void loadSettingsFromDatabase(Properties legacyBurpSettings) {
+        loadOrSeedSettings(legacyBurpSettings);
+    }
+
+    /** Nguồn cấu hình đã nạp sau {@link #loadOrSeedSettings}. */
+    enum SettingsSource { DATABASE, BURP_LEGACY, DEFAULTS }
+
+    /**
+     * Luồng nạp cấu hình dùng chung cho lúc khởi động và lúc đổi file DB:
+     * 1. DB có cấu hình -> dùng DB.
+     * 2. DB trống, project Burp còn key cũ (nâng cấp từ bản lưu mọi thứ trong Burp) -> lấy từ Burp.
+     * 3. Cả hai đều trống (project và DB mới) -> giá trị mặc định.
+     * Ở (2) và (3), kết quả được ghi vào DB để lần sau đi thẳng nhánh (1).
+     * Key nào Burp cũ không có cũng nhận mặc định, qua {@link #applySettings}.
+     */
+    private SettingsSource loadOrSeedSettings(Properties burpProperties) {
+        Map<String, String> fromDb = databaseManager.loadSettings();
+        if (!fromDb.isEmpty()) {
+            applySettings(fromDb);
+            return SettingsSource.DATABASE;
+        }
+        Map<String, String> legacy = legacySettingsFromBurp(burpProperties);
+        applySettings(legacy);
+        persistSettingsNow();
+        if (legacy.isEmpty()) {
+            return SettingsSource.DEFAULTS;
+        }
+        api.logging().logToOutput("Migrated " + legacy.size() + " setting(s) from the Burp project into "
+                + databaseManager.currentDbPath());
+        return SettingsSource.BURP_LEGACY;
+    }
+
+    /** Các key cấu hình (không phải đường dẫn) mà project Burp còn giữ từ bản cũ. */
+    private Map<String, String> legacySettingsFromBurp(Properties burpProperties) {
+        Map<String, String> legacy = new LinkedHashMap<>();
+        if (burpProperties == null) {
+            return legacy;
+        }
+        for (String key : DB_SETTING_KEYS) {
+            String value = burpProperties.getProperty(key);
+            if (value != null) {
+                legacy.put(key, value);
+            }
+        }
+        return legacy;
+    }
+
+    /** Đọc nguyên Properties đang lưu trong project Burp (đường dẫn + key cũ nếu còn). */
+    private Properties readBurpProperties() {
+        Properties props = new Properties();
         try {
-            Properties props = new Properties();
             String settingsStr = api.persistence().extensionData().getString("settings");
             if (settingsStr != null && !settingsStr.isEmpty()) {
                 props.load(new StringReader(settingsStr));
             }
-            props.setProperty("exclude_extensions", valueOrEmpty(exclude_extensions));
-            props.setProperty("highlightEnabled", String.valueOf(highlightEnabled));
-            props.setProperty("noteEnabled", String.valueOf(noteEnabled));
-            props.remove("outputPath");
-            props.setProperty(currentOutputPathKey(), valueOrEmpty(savedOutputPath));
-            props.setProperty("autoBypassNoParam", String.valueOf(autoBypassNoParam));
-            props.setProperty("autoAnnotateHistory", String.valueOf(autoAnnotateHistory));
-            props.setProperty("annotationSweepMinBatch", String.valueOf(annotationSweepMinBatch));
-            props.setProperty("exclude_status_code", valueOrEmpty(exclude_status_code));
-            props.setProperty("path_parameter_rules", valueOrEmpty(path_parameter_rules));
-            props.setProperty("ignored_parameter_rules", valueOrEmpty(ignored_parameter_rules));
+        } catch (Exception e) {
+            api.logging().logToError("Failed to read settings from the Burp project: " + e.getMessage());
+        }
+        return props;
+    }
 
+    /**
+     * Đưa cấu hình về mặc định: hỏi xác nhận, nạp mặc định vào bộ nhớ, lưu vào file DB đang mở
+     * và hiện lên form. Đường dẫn DB và dữ liệu API giữ nguyên. Gọi từ EDT.
+     */
+    private void resetSettingsToDefault() {
+        int answer = JOptionPane.showConfirmDialog(null,
+                "Đưa toàn bộ cấu hình về mặc định và lưu vào file DB đang mở?\n"
+                        + "Đường dẫn DB và dữ liệu API không bị ảnh hưởng.",
+                "Reset Default", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (answer != JOptionPane.OK_OPTION) {
+            return;
+        }
+        // Map rỗng -> mọi key vắng mặt -> applySettings() dùng giá trị mặc định.
+        applySettings(Map.of());
+        pendingAnnotationKeys.clear();
+        if (settingsForm != null) {
+            settingsForm.showCurrentValues();
+        }
+        runOnDbThread(this::persistSettingsNow);
+    }
+
+    /** Ghi duy nhất đường dẫn DB vào Burp; các key cấu hình cũ (nếu còn) được dọn đi. */
+    private void saveOutputPathToBurp() {
+        try {
+            Properties props = new Properties();
+            props.setProperty(currentOutputPathKey(), valueOrEmpty(savedOutputPath));
             StringWriter writer = new StringWriter();
             props.store(writer, null);
             api.persistence().extensionData().setString("settings", writer.toString());
         } catch (Exception ex) {
-            JOptionPane.showMessageDialog(null, "Failed to save settings: " + ex.getMessage());
+            api.logging().logToError("Failed to save database path to the Burp project: " + ex.getMessage());
         }
+    }
+
+    /**
+     * Đổi sang file DB khác: mở file, nạp cấu hình của file đó lên bộ nhớ và form, tải lại bảng.
+     * File chưa có cấu hình thì được gieo bằng cấu hình đang dùng. Gọi từ EDT.
+     */
+    private void switchDatabase(String requestedPath) {
+        // Đọc Burp TRƯỚC khi ghi lại path: ngay sau nâng cấp Burp vẫn còn key cũ để gieo cho file mới.
+        Properties burpProperties = readBurpProperties();
+        savedOutputPath = requestedPath;
+        saveOutputPathToBurp();
+        runOnDbThread(() -> {
+            databaseManager.reopen(requestedPath);
+            SettingsSource source = loadOrSeedSettings(burpProperties);
+            pendingAnnotationKeys.clear();
+            List<Object[]> rows = databaseManager.loadApiData();
+            Map<String, DatabaseManager.ApiStatus> statuses = databaseManager.loadStatusIndex();
+            statusCache.clear();
+            statusCache.putAll(statuses);
+            String dbPath = databaseManager.currentDbPath();
+            SwingUtilities.invokeLater(() -> {
+                if (settingsForm != null) {
+                    settingsForm.showCurrentValues();
+                }
+                populateTable(rows);
+                JOptionPane.showMessageDialog(null, "Đã mở " + dbPath + "\n" + switch (source) {
+                    case DATABASE -> "Đã nạp cấu hình lưu trong file này lên form.";
+                    case BURP_LEGACY -> "File chưa có cấu hình, đã chuyển cấu hình cũ từ project Burp vào file.";
+                    case DEFAULTS -> "File chưa có cấu hình, đã dùng giá trị mặc định.";
+                });
+            });
+        });
     }
 
     private String valueOrEmpty(String value) {
@@ -2021,35 +2419,14 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     /**
      * Tải các cài đặt từ persistence extension data khi khởi động.
      */
-    private void loadSavedSettings() {
-        try {
-            String settingsStr = api.persistence().extensionData().getString("settings");
-            if (settingsStr != null && !settingsStr.isEmpty()) {
-                Properties props = new Properties();
-                props.load(new StringReader(settingsStr));
-                exclude_extensions = props.getProperty("exclude_extensions", "");
-                highlightEnabled = Boolean.parseBoolean(props.getProperty("highlightEnabled", "false"));
-                noteEnabled = Boolean.parseBoolean(props.getProperty("noteEnabled", "false"));
-                savedOutputPath = props.getProperty(currentOutputPathKey(), "");
-                autoBypassNoParam = Boolean.parseBoolean(props.getProperty("autoBypassNoParam", "false"));
-                autoAnnotateHistory = Boolean.parseBoolean(props.getProperty("autoAnnotateHistory", "false"));
-                annotationSweepMinBatch = parseSweepBatchSize(props.getProperty("annotationSweepMinBatch"));
-                exclude_status_code = props.getProperty("exclude_status_code", "");
-                path_parameter_rules = props.getProperty("path_parameter_rules", "");
-                ignored_parameter_rules = props.getProperty("ignored_parameter_rules", "");
-            }
-            if (path_parameter_rules == null) {
-                path_parameter_rules = "";
-            }
-            if (ignored_parameter_rules == null) {
-                ignored_parameter_rules = "";
-            }
-            compiledPathParameterRules = compilePathParameterRules(path_parameter_rules);
-            compiledIgnoredParameterRules = compileIgnoredParameterRules(ignored_parameter_rules);
-            excludedStatusCodes = parseStatusCodes(exclude_status_code);
-        } catch (Exception e) {
-            api.logging().logToError("Failed to load settings: " + e.getMessage());
-        }
+    /**
+     * Đọc đường dẫn DB từ Burp. Trả về toàn bộ Properties đã lưu để còn chuyển các key cấu
+     * hình cũ (bản trước lưu mọi thứ ở đây) sang DB một lần.
+     */
+    private Properties loadOutputPathFromBurp() {
+        Properties props = readBurpProperties();
+        savedOutputPath = props.getProperty(currentOutputPathKey(), "");
+        return props;
     }
     /**
      * Kiểm tra xem một mã trạng thái HTTP nhất định có nên bị loại trừ dựa trên cài đặt của người dùng hay không.

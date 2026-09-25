@@ -121,6 +121,74 @@ public class DatabaseManager {
             """;
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(sql);
+            // Cấu hình đi theo file DB (không theo project Burp) để nhiều project dùng chung.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """);
+        }
+    }
+
+    /** Đường dẫn file DB đang mở (đã chuẩn hoá), null nếu chưa mở. */
+    public synchronized String currentDbPath() {
+        return dbPath;
+    }
+
+    /** Chuẩn hoá một đường dẫn người dùng nhập giống hệt cách {@link #initialize} sẽ mở nó. */
+    public String resolveDbPath(String savedOutputPath) {
+        return getDbPath(savedOutputPath);
+    }
+
+    /**
+     * Đọc toàn bộ cấu hình lưu trong file DB.
+     *
+     * @return Map key -> value; rỗng nếu DB chưa có cấu hình (file mới, hoặc tạo bởi bản cũ).
+     */
+    public synchronized Map<String, String> loadSettings() {
+        Map<String, String> settings = new LinkedHashMap<>();
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT key, value FROM settings ORDER BY key")) {
+            while (rs.next()) {
+                settings.put(rs.getString("key"), rs.getString("value"));
+            }
+        } catch (SQLException e) {
+            api.logging().logToError("Failed to load settings from database: " + e.getMessage(), e);
+        }
+        return settings;
+    }
+
+    /** Ghi cấu hình vào file DB trong một transaction; key cũ không có trong map được giữ nguyên. */
+    public synchronized void saveSettings(Map<String, String> settings) {
+        String sql = "INSERT INTO settings (key, value) VALUES (?, ?) "
+                + "ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+        boolean originalAutoCommit = true;
+        try {
+            originalAutoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                for (Map.Entry<String, String> entry : settings.entrySet()) {
+                    stmt.setString(1, entry.getKey());
+                    stmt.setString(2, entry.getValue() == null ? "" : entry.getValue());
+                    stmt.addBatch();
+                }
+                stmt.executeBatch();
+            }
+            connection.commit();
+        } catch (SQLException e) {
+            try {
+                connection.rollback();
+            } catch (SQLException rollbackError) {
+                api.logging().logToError("Failed to rollback settings save: " + rollbackError.getMessage(), rollbackError);
+            }
+            api.logging().logToError("Failed to save settings to database: " + e.getMessage(), e);
+        } finally {
+            try {
+                connection.setAutoCommit(originalAutoCommit);
+            } catch (SQLException e) {
+                api.logging().logToError("Failed to restore database autocommit: " + e.getMessage(), e);
+            }
         }
     }
 
@@ -304,7 +372,7 @@ public class DatabaseManager {
      * @param host          Host của request.
      * @param path          Path của request.
      * @param requestParams Tập hợp các tham số từ request hiện tại.
-     * @return Dòng và trạng thái mới của API sau khi cập nhật, hoặc null nếu lỗi.
+     * @return Dòng và trạng thái mới của API, hoặc null nếu không có gì thay đổi (hoặc lỗi).
      */
     public synchronized ApiUpdate insertOrUpdateApi(String method, String host, String path, Set<String> requestParams) {
         String selectSql = "SELECT unscanned_params, scanned_params FROM api_log WHERE host = ? AND path = ? AND method = ?";
@@ -338,6 +406,8 @@ public class DatabaseManager {
                         updateStmt.setString(4, method);
                         updateStmt.executeUpdate();
                     }
+                } else {
+                    return null; // Request lặp lại, không có gì mới: không đọc lại, không cập nhật UI.
                 }
             } else { // API mới -> Chèn dòng mới
                 String paramsStr = setToString(requestParams);
@@ -431,25 +501,29 @@ public class DatabaseManager {
      * @param method Phương thức HTTP (luôn là GET).
      * @param host   Host của API.
      * @param path   Path của API.
-     * @return Dòng và trạng thái mới của API, hoặc null nếu thao tác thất bại.
+     * @return Dòng và trạng thái mới nếu API vừa được chèn hoặc vừa bật cờ bypass, ngược lại null.
      */
     public synchronized ApiUpdate autoBypassApi(String method, String host, String path) {
         String upsertSql = """
             INSERT INTO api_log (method, host, path, unscanned_params, scanned_params, is_bypassed)
             VALUES (?, ?, ?, '', '', 1)
             ON CONFLICT(host, path, method) DO UPDATE SET
-                is_bypassed = CASE
-                    WHEN api_log.is_scanned = 0 AND api_log.is_rejected = 0 AND api_log.unscanned_params = ''
-                    THEN 1
-                    ELSE api_log.is_bypassed
-                END,
+                is_bypassed = 1,
                 last_seen = CURRENT_TIMESTAMP
+            WHERE api_log.is_bypassed = 0
+              AND api_log.is_scanned = 0
+              AND api_log.is_rejected = 0
+              AND api_log.unscanned_params = ''
             """;
         try (PreparedStatement stmt = connection.prepareStatement(upsertSql)) {
             stmt.setString(1, method);
             stmt.setString(2, host);
             stmt.setString(3, path);
-            stmt.executeUpdate();
+            // 0 dòng = API đã có và không cần bật cờ (đã bypass, đã scan/reject, hoặc còn param):
+            // không ghi gì, không đọc lại, không cập nhật UI.
+            if (stmt.executeUpdate() == 0) {
+                return null;
+            }
             return readApi(method, host, path);
         } catch (SQLException e) {
             api.logging().logToError("Error during autoBypassApi: " + e.getMessage(), e);
@@ -550,23 +624,42 @@ public class DatabaseManager {
                 WHERE id = ?
                 """;
 
-        try (PreparedStatement updateStmt = connection.prepareStatement(updateSql)) {
-            for (ParameterCleanupUpdate update : updates) {
-                updateStmt.setString(1, setToString(update.unscannedParams));
-                updateStmt.setString(2, setToString(update.scannedParams));
-                updateStmt.setBoolean(3, update.isFullyScanned);
-                updateStmt.setBoolean(4, update.isFullyScanned);
-                updateStmt.setBoolean(5, update.isFullyScanned);
-                updateStmt.setInt(6, update.id);
-                updateStmt.addBatch();
+        // Một transaction cho cả lô: bị ngắt giữa chừng (crash, tắt máy) thì hoặc mọi dòng
+        // được cập nhật, hoặc không dòng nào - và nhanh hơn nhiều so với commit từng dòng.
+        boolean originalAutoCommit = true;
+        try {
+            originalAutoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+            try (PreparedStatement updateStmt = connection.prepareStatement(updateSql)) {
+                for (ParameterCleanupUpdate update : updates) {
+                    updateStmt.setString(1, setToString(update.unscannedParams));
+                    updateStmt.setString(2, setToString(update.scannedParams));
+                    updateStmt.setBoolean(3, update.isFullyScanned);
+                    updateStmt.setBoolean(4, update.isFullyScanned);
+                    updateStmt.setBoolean(5, update.isFullyScanned);
+                    updateStmt.setInt(6, update.id);
+                    updateStmt.addBatch();
+                }
+                updateStmt.executeBatch();
             }
-            updateStmt.executeBatch();
+            connection.commit();
 
             api.logging().logToOutput("Removed ignored parameters from " + updates.size() + " stored API records.");
             return updates.size();
         } catch (SQLException e) {
+            try {
+                connection.rollback();
+            } catch (SQLException rollbackError) {
+                api.logging().logToError("Failed to rollback ignored parameter cleanup: " + rollbackError.getMessage(), rollbackError);
+            }
             api.logging().logToError("Error during ignored parameter cleanup: " + e.getMessage(), e);
             return 0;
+        } finally {
+            try {
+                connection.setAutoCommit(originalAutoCommit);
+            } catch (SQLException e) {
+                api.logging().logToError("Failed to restore database autocommit: " + e.getMessage(), e);
+            }
         }
     }
 

@@ -25,6 +25,7 @@ public class SettingsPanel {
      * @param autoAnnotateHistoryCheckBox Checkbox bật/tắt tự động sửa highlight/note trong Proxy history.
      * @param annotationBatchField Ô nhập số API tối thiểu trong hàng chờ để chạy một lượt quét history.
      * @param applyButton Nút để áp dụng và lưu cài đặt.
+     * @param resetDefaultButton Nút đưa cấu hình về mặc định.
      * @param totalLbl, scannedLbl, etc. Các nhãn để hiển thị thống kê.
      * @param excludeStatusCodesField Trường nhập các status code cần loại trừ.
      * @return Một JPanel chứa toàn bộ giao diện của tab Settings.
@@ -39,6 +40,7 @@ public class SettingsPanel {
             JCheckBox  autoAnnotateHistoryCheckBox,
             JTextField annotationBatchField,
             JButton    applyButton,
+            JButton    resetDefaultButton,
             JLabel     totalLbl,
             JLabel     scannedLbl,
             JLabel     rejectedLbl,
@@ -259,6 +261,9 @@ public class SettingsPanel {
         applyButton.setPreferredSize(new Dimension(150, 32));
         applyButton.setFont(applyButton.getFont().deriveFont(Font.BOLD, 13f));
         southPanel.add(applyButton);
+        resetDefaultButton.setPreferredSize(new Dimension(150, 32));
+        southPanel.add(Box.createRigidArea(new Dimension(10, 0)));
+        southPanel.add(resetDefaultButton);
 
         /* ========= LẮP RÁP CÁC PANEL VÀO PANEL GỐC ========= */
         settingsPanel.add(centerPanel, BorderLayout.CENTER);
