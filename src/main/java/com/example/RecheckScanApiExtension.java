@@ -278,19 +278,30 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                     return ResponseReceivedAction.continueWith(response);
                 }
 
-                String host = request.httpService().host();
+                // Ngoài scope thì không làm gì cả: API ngoài scope không bao giờ được ghi nhận,
+                // nên không cần normalize path hay parse param (việc tốn CPU nhất, nhất là body JSON/XML).
+                if (!api.scope().isInScope(request.url())) {
+                    return ResponseReceivedAction.continueWith(response);
+                }
                 String rawPath = request.pathWithoutQuery();
+                boolean fromScanner = sourceType == ToolType.SCANNER;
+                // File tĩnh bị loại trừ cũng không bao giờ được ghi nhận (Scanner giữ nguyên hành vi cũ).
+                if (!fromScanner && isExcludedByExtension(rawPath)) {
+                    return ResponseReceivedAction.continueWith(response);
+                }
+
+                String host = request.httpService().host();
                 String path = normalizePath(rawPath);
-                
+
                 // Trích xuất tất cả tham số từ cả URL và body.
                 Set<String> requestParams = extractParameters(request);
-                
+
                 // Trường hợp 1: Request từ Scanner -> xử lý các tham số đã được quét.
-                if (sourceType == ToolType.SCANNER) {
+                if (fromScanner) {
                     submitDbTask(() -> databaseManager.processScannedParameters(method, host, path, requestParams));
                 }
-                // Trường hợp 2: Request từ các công cụ khác (Proxy, Repeater) và nằm trong scope.
-                else if (api.scope().isInScope(request.url()) && !isExcludedByExtension(rawPath)) {
+                // Trường hợp 2: Request từ các công cụ khác (Proxy, Repeater) đã qua lọc scope/extension ở trên.
+                else {
                     // Nếu request từ Repeater, đánh dấu vào DB.
                     if (sourceType == ToolType.REPEATER) {
                         submitDbTask(() -> databaseManager.updateRepeaterStatus(method, host, path));
