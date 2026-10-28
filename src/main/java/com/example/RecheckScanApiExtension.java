@@ -26,6 +26,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.StringReader;
 import java.io.StringWriter;
+import java.sql.SQLException;
 import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -215,11 +216,26 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
         // để nhiều project Burp trỏ cùng một file dùng chung cấu hình.
         Properties legacyBurpSettings = loadOutputPathFromBurp();
         databaseManager = new DatabaseManager(api);
-        databaseManager.initialize(savedOutputPath);
+        String startupDbError = databaseManager.initialize(savedOutputPath);
+        String failedDbPath = startupDbError == null ? null : databaseManager.resolveDbPath(savedOutputPath);
+        if (startupDbError != null) {
+            savedOutputPath = databaseManager.currentDbPath();
+        }
         loadSettingsFromDatabase(legacyBurpSettings);
 
         // Tạo giao diện người dùng trên luồng Event Dispatch Thread (EDT) của Swing để đảm bảo an toàn luồng.
-        SwingUtilities.invokeLater(this::createUI);
+        SwingUtilities.invokeLater(() -> {
+            createUI(startupDbError != null);
+            if (startupDbError != null) {
+                JOptionPane.showMessageDialog(null,
+                        "Không mở được database đã lưu trong project:\n"
+                                + failedDbPath + "\n\n"
+                                + "Lỗi: " + startupDbError + "\n\n"
+                                + "Extension đang dùng file DB tạm:\n" + savedOutputPath + "\n\n"
+                                + "Vào Settings để chọn đường dẫn DB mới; dữ liệu cũ chỉ có nếu bạn chọn lại file DB gốc.",
+                        "Recheck Scan - Database không khả dụng", JOptionPane.WARNING_MESSAGE);
+            }
+        });
 
         // Bộ quét định kỳ: sửa lại highlight/note trong Proxy history cho các API đã đổi trạng thái.
         annotationSweeper = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -820,7 +836,7 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     /**
      * Khởi tạo toàn bộ giao diện người dùng của extension.
      */
-    private void createUI() {
+    private void createUI(boolean recoveringDatabase) {
         // Khởi tạo TableModel với các cột
         // Thứ tự rất quan trọng: Method, Host, Path, Unscanned, Scanned, Rejected, Bypass, Repeater(ẩn), id(ẩn)
         tableModel = new DefaultTableModel(new Object[]{"Method", "Host", "Path", "Unscanned Params", "Scanned", "Rejected", "Bypass", "Repeater", "id"}, 0) {
@@ -1034,7 +1050,17 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
             final boolean bypassOldRecords = autoBypassNoParam;
             runOnDbThread(() -> {
                 // Mở lại CSDL trước để đảm bảo đang làm việc với đúng file.
-                databaseManager.reopen(dbPath);
+                try {
+                    databaseManager.reopen(dbPath);
+                } catch (SQLException | ClassNotFoundException ex) {
+                    api.logging().logToError("Failed to reopen database: " + ex.getMessage(), ex);
+                    SwingUtilities.invokeLater(() -> {
+                        applyButton.setEnabled(true);
+                        JOptionPane.showMessageDialog(null, "Không mở được database: " + ex.getMessage(),
+                                "Recheck Scan", JOptionPane.ERROR_MESSAGE);
+                    });
+                    return;
+                }
 
                 // *** Áp dụng chuẩn hoá path, loại tham số và bypass cho dữ liệu cũ ***
                 if (normalizePaths) {
@@ -1085,6 +1111,9 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
                 + "Không đổi đường dẫn DB, không đụng dữ liệu API.");
         resetDefaultButton.addActionListener(e -> resetSettingsToDefault());
         tabs.addTab("Settings", SettingsPanel.create(extensionArea, outputPathField, browseButton, highlightCheckBox, noteCheckBox, autoBypassCheckBox, autoAnnotateHistoryCheckBox, annotationBatchField, applyButton, resetDefaultButton, totalLbl, scannedLbl, rejectedLbl, bypassLbl, unverifiedLbl, excludeStatusCodesField, pathParameterRulesArea, ignoredParameterRulesArea));
+        if (recoveringDatabase) {
+            tabs.setSelectedIndex(tabs.indexOfTab("Settings"));
+        }
         
         // Đăng ký tab chính vào giao diện Burp.
         JPanel mainPanel = new JPanel(new BorderLayout());
@@ -2384,10 +2413,20 @@ public class RecheckScanApiExtension implements BurpExtension, ExtensionUnloadin
     private void switchDatabase(String requestedPath) {
         // Đọc Burp TRƯỚC khi ghi lại path: ngay sau nâng cấp Burp vẫn còn key cũ để gieo cho file mới.
         Properties burpProperties = readBurpProperties();
-        savedOutputPath = requestedPath;
-        saveOutputPathToBurp();
         runOnDbThread(() -> {
-            databaseManager.reopen(requestedPath);
+            try {
+                databaseManager.reopen(requestedPath);
+            } catch (SQLException | ClassNotFoundException ex) {
+                api.logging().logToError("Failed to switch database: " + ex.getMessage(), ex);
+                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(null,
+                        "Không mở được database:\n" + databaseManager.resolveDbPath(requestedPath)
+                                + "\n\nLỗi: " + ex.getMessage()
+                                + "\n\nHãy chọn đường dẫn khác trong Settings.",
+                        "Recheck Scan", JOptionPane.ERROR_MESSAGE));
+                return;
+            }
+            savedOutputPath = requestedPath;
+            saveOutputPathToBurp();
             SettingsSource source = loadOrSeedSettings(burpProperties);
             pendingAnnotationKeys.clear();
             List<Object[]> rows = databaseManager.loadApiData();

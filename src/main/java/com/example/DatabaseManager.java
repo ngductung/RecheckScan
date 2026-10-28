@@ -3,6 +3,7 @@ package com.example;
 import burp.api.montoya.MontoyaApi;
 
 import java.io.File;
+import java.io.IOException;
 import java.sql.*;
 import java.util.*;
 import java.util.function.Predicate;
@@ -50,29 +51,55 @@ public class DatabaseManager {
      * Khởi tạo kết nối đến cơ sở dữ liệu và đảm bảo bảng dữ liệu đã sẵn sàng.
      *
      * @param savedOutputPath Đường dẫn đến tệp CSDL do người dùng cấu hình. Nếu rỗng, một đường dẫn mặc định sẽ được sử dụng.
+     * @return null nếu mở thành công; thông báo lỗi nếu phải dùng file DB tạm.
      */
-    public synchronized void initialize(String savedOutputPath) {
-        this.dbPath = getDbPath(savedOutputPath);
+    public synchronized String initialize(String savedOutputPath) {
         try {
-            // Nạp driver JDBC cho SQLite.
-            Class.forName("org.sqlite.JDBC");
-            
-            // Đảm bảo thư mục cha tồn tại trước khi tạo tệp CSDL.
-            File dbFile = new File(dbPath);
-            File parentDir = dbFile.getParentFile();
-            if (parentDir != null && !parentDir.exists()) {
-                parentDir.mkdirs();
-            }
-            
-            // Tạo kết nối đến tệp SQLite.
-            connection = DriverManager.getConnection("jdbc:sqlite:" + this.dbPath);
-            api.logging().logToOutput("Successfully connected to SQLite database: " + this.dbPath);
-            
-            // Tạo bảng nếu nó chưa tồn tại.
-            createTableIfNotExists();
+            reopen(savedOutputPath);
+            return null;
         } catch (SQLException | ClassNotFoundException e) {
             api.logging().logToError("Failed to initialize SQLite database: " + e.getMessage(), e);
+            try {
+                File temporaryDb = File.createTempFile("RecheckScan-recovery-", ".db");
+                openDatabase(temporaryDb.getAbsolutePath());
+            } catch (IOException | SQLException | ClassNotFoundException fallbackError) {
+                throw new IllegalStateException("Cannot open SQLite database or temporary database file", fallbackError);
+            }
+            return e.getMessage();
         }
+    }
+
+    /** Mở và tạo schema trước khi thay kết nối hiện tại; nếu lỗi, DB cũ vẫn dùng được. */
+    private void openDatabase(String path) throws SQLException, ClassNotFoundException {
+        Class.forName("org.sqlite.JDBC");
+        if (!":memory:".equals(path)) {
+            File parentDir = new File(path).getAbsoluteFile().getParentFile();
+            if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs() && !parentDir.isDirectory()) {
+                throw new SQLException("Cannot create database directory: " + parentDir);
+            }
+        }
+        Connection next = DriverManager.getConnection("jdbc:sqlite:" + path);
+        try {
+            createTableIfNotExists(next);
+        } catch (SQLException e) {
+            try {
+                next.close();
+            } catch (SQLException closeError) {
+                e.addSuppressed(closeError);
+            }
+            throw e;
+        }
+        Connection previous = connection;
+        connection = next;
+        dbPath = path;
+        if (previous != null) {
+            try {
+                previous.close();
+            } catch (SQLException e) {
+                api.logging().logToError("Failed to close previous SQLite database: " + e.getMessage(), e);
+            }
+        }
+        api.logging().logToOutput("Successfully connected to SQLite database: " + path);
     }
 
     /**
@@ -102,7 +129,7 @@ public class DatabaseManager {
      *
      * @throws SQLException Nếu có lỗi khi thực thi câu lệnh SQL.
      */
-    private void createTableIfNotExists() throws SQLException {
+    private void createTableIfNotExists(Connection dbConnection) throws SQLException {
         String sql = """
             CREATE TABLE IF NOT EXISTS api_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,      -- Khóa chính tự tăng, định danh duy nhất cho mỗi dòng.
@@ -119,7 +146,7 @@ public class DatabaseManager {
                 UNIQUE(host, path, method)                 -- Ràng buộc duy nhất: không thể có hai dòng trùng cả host, path và method.
             );
             """;
-        try (Statement stmt = connection.createStatement()) {
+        try (Statement stmt = dbConnection.createStatement()) {
             stmt.execute(sql);
             // Cấu hình đi theo file DB (không theo project Burp) để nhiều project dùng chung.
             stmt.execute("""
@@ -193,12 +220,11 @@ public class DatabaseManager {
     }
 
     /**
-     * Đóng kết nối hiện tại rồi mở lại CSDL tại đường dẫn mới trong cùng một lần khoá,
-     * để không luồng nào bắt gặp một connection đã đóng ở giữa hai thao tác.
+     * Mở DB mới trước khi đóng DB cũ trong cùng một lần khoá. Nếu mở thất bại,
+     * kết nối hiện tại vẫn dùng được.
      */
-    public synchronized void reopen(String savedOutputPath) {
-        close();
-        initialize(savedOutputPath);
+    public synchronized void reopen(String savedOutputPath) throws SQLException, ClassNotFoundException {
+        openDatabase(getDbPath(savedOutputPath));
     }
 
     /**
